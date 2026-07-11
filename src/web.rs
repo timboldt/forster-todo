@@ -2,11 +2,13 @@
 //! same [`Session`] as the TUI. The browser gets one static page plus a small
 //! JSON API:
 //!
-//! - `GET  /`                       the page (embedded at compile time)
-//! - `GET  /api/tasks`              snapshot: `{version, mode, current, tasks}`
-//! - `POST /api/add`                body = task text; appends an open task
-//! - `POST /api/complete?version=N` completes the DO NOW task; the version
-//!   guard (409 on mismatch) prevents acting on a stale view
+//! - `GET  /`          the page (embedded at compile time)
+//! - `GET  /api/tasks` snapshot: `{version, mode, current, benchmark, cursor, tasks}`
+//! - `POST /api/add`   body = task text; appends an open task
+//! - `POST /api/act?op=<op>&version=N` applies an FVP operation:
+//!   `dot`/`skip`/`back`/`finish` during a scan, `complete`/`resume` in action
+//!   mode. The version guard (409 on mismatch) prevents acting on a stale
+//!   view, and ops outside their mode return 409.
 //!
 //! `version` is the session's change counter; the page polls and re-renders
 //! only when it moves. All mutations go through the same [`Session`] the TUI
@@ -132,7 +134,11 @@ fn handle(mut request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
                 Err(_) => respond_json(request, 500, r#"{"error":"failed to save"}"#),
             }
         }
-        (Method::Post, "/api/complete") => {
+        (Method::Post, "/api/act") => {
+            let Some(op) = query_param(query, "op") else {
+                return respond_json(request, 400, r#"{"error":"op parameter required"}"#);
+            };
+            let op = op.to_string();
             let Some(expected) = query_param(query, "version").and_then(|v| v.parse::<u64>().ok())
             else {
                 return respond_json(request, 400, r#"{"error":"version parameter required"}"#);
@@ -141,14 +147,42 @@ fn handle(mut request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
             if session.version() != expected {
                 return respond_json(request, 409, r#"{"error":"stale version"}"#);
             }
-            if session.action_task().is_none() {
-                return respond_json(
-                    request,
-                    409,
-                    r#"{"error":"no action task (scan in progress)"}"#,
-                );
-            }
-            match session.complete() {
+            let scanning = matches!(session.mode, Mode::Preselect { .. });
+            let result = match op.as_str() {
+                "dot" | "skip" | "back" | "finish" => {
+                    if !scanning {
+                        return respond_json(request, 409, r#"{"error":"not scanning"}"#);
+                    }
+                    match op.as_str() {
+                        "dot" => session.dot(),
+                        "skip" => {
+                            session.move_down();
+                            Ok(())
+                        }
+                        "back" => {
+                            session.move_up();
+                            Ok(())
+                        }
+                        _ => {
+                            session.finish_scan();
+                            Ok(())
+                        }
+                    }
+                }
+                "complete" | "resume" => {
+                    if session.action_task().is_none() {
+                        return respond_json(request, 409, r#"{"error":"no action task"}"#);
+                    }
+                    if op == "complete" {
+                        session.complete()
+                    } else {
+                        session.resume_scan();
+                        Ok(())
+                    }
+                }
+                _ => return respond_json(request, 400, r#"{"error":"unknown op"}"#),
+            };
+            match result {
                 Ok(()) => respond_json(request, 200, &snapshot_json(&session)),
                 Err(_) => respond_json(request, 500, r#"{"error":"failed to save"}"#),
             }
@@ -192,6 +226,10 @@ fn snapshot_json(session: &Session) -> String {
         Some(i) => i.to_string(),
         None => "null".to_string(),
     };
+    let (benchmark, cursor) = match session.mode {
+        Mode::Preselect { benchmark, cursor } => (benchmark.to_string(), cursor.to_string()),
+        _ => ("null".to_string(), "null".to_string()),
+    };
     let tasks: Vec<String> = session
         .tasks
         .iter()
@@ -209,10 +247,12 @@ fn snapshot_json(session: &Session) -> String {
         })
         .collect();
     format!(
-        r#"{{"version":{},"mode":"{}","current":{},"tasks":[{}]}}"#,
+        r#"{{"version":{},"mode":"{}","current":{},"benchmark":{},"cursor":{},"tasks":[{}]}}"#,
         session.version(),
         mode,
         current,
+        benchmark,
+        cursor,
         tasks.join(",")
     )
 }
@@ -279,7 +319,7 @@ mod tests {
         let json = snapshot_json(&session);
         assert_eq!(
             json,
-            r#"{"version":0,"mode":"preselect","current":null,"tasks":[{"text":"say \"hi\"","status":"dotted"},{"text":"b","status":"open"}]}"#
+            r#"{"version":0,"mode":"preselect","current":null,"benchmark":0,"cursor":1,"tasks":[{"text":"say \"hi\"","status":"dotted"},{"text":"b","status":"open"}]}"#
         );
     }
 }

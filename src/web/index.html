@@ -13,38 +13,39 @@
   }
   h1 { font-size: 1.15rem; margin: 0 0 1rem; }
   h1 .accent { color: #7ee787; }
+  button {
+    border: none; border-radius: 6px; padding: .4rem .85rem;
+    cursor: pointer; font-size: .9rem; font-weight: 600;
+    background: #21262d; color: #e6edf3;
+  }
+  button:hover { background: #30363d; }
+  button.green { background: #238636; color: #fff; }
+  button.green:hover { background: #2ea043; }
   #donow {
-    display: none; align-items: center; gap: .6rem;
+    display: none; align-items: center; gap: .6rem; flex-wrap: wrap;
     background: #14381e; color: #7ee787; border: 1px solid #238636;
     border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1rem;
     font-weight: 600;
   }
   #donow .label { font-size: .75rem; letter-spacing: .08em; color: #3fb950; }
-  #donow-text { flex: 1; }
-  #complete {
-    background: #238636; color: #fff; border: none; border-radius: 6px;
-    padding: .35rem .8rem; cursor: pointer; font-size: .85rem; font-weight: 600;
+  #donow-text { flex: 1; min-width: 10rem; }
+  #scan {
+    display: none;
+    background: #2b2306; border: 1px solid #9e6a03; border-radius: 8px;
+    padding: .7rem .9rem; margin-bottom: 1rem;
   }
-  #complete:hover { background: #2ea043; }
-  #scanning {
-    display: none; color: #e3b341; font-size: .9rem; margin-bottom: 1rem;
-  }
+  #scan .q { margin-bottom: .6rem; }
+  #scan .q b { color: #e3b341; }
+  #scan .q .cand { color: #7ee787; }
+  #scan .btns { display: flex; gap: .5rem; flex-wrap: wrap; }
   #addform { display: flex; gap: .5rem; margin-bottom: 1rem; }
   #addtext {
     flex: 1; background: #161b22; color: #e6edf3; border: 1px solid #30363d;
     border-radius: 6px; padding: .45rem .6rem; font-size: .95rem;
   }
   #addtext:focus { outline: none; border-color: #238636; }
-  #addform button {
-    background: #238636; color: #fff; border: none; border-radius: 6px;
-    padding: .45rem .9rem; cursor: pointer; font-weight: 600;
-  }
-  #addform button:hover { background: #2ea043; }
   .tabs { display: flex; gap: .5rem; margin-bottom: .8rem; }
-  .tabs button {
-    background: #161b22; color: #e6edf3; border: 1px solid #30363d;
-    border-radius: 6px; padding: .35rem .8rem; cursor: pointer; font-size: .9rem;
-  }
+  .tabs button { font-weight: 400; background: #161b22; border: 1px solid #30363d; }
   .tabs button.active { background: #14381e; color: #7ee787; border-color: #238636; }
   ul { list-style: none; padding: 0; margin: 0; }
   li {
@@ -56,10 +57,15 @@
   li.dotted { color: #e3b341; font-weight: 600; }
   li.dotted .marker { color: #e3b341; }
   li.done { color: #8b949e; text-decoration: line-through; }
-  li.donow { background: #14381e; border-radius: 6px; border-bottom-color: transparent; }
-  li.donow, li.donow .marker { color: #7ee787; }
+  li.benchmark { text-decoration: underline; }
+  li.hilite { background: #14381e; border-radius: 6px; border-bottom-color: transparent; }
+  li.hilite, li.hilite .marker { color: #7ee787; }
   #empty { color: #8b949e; padding: 1rem 0; display: none; }
   footer { margin-top: 1.2rem; color: #484f58; font-size: .8rem; }
+  kbd {
+    background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+    padding: 0 .3rem; font-size: .75rem;
+  }
 </style>
 </head>
 <body>
@@ -68,13 +74,26 @@
   <div id="donow">
     <span class="label">DO NOW</span>
     <span id="donow-text"></span>
-    <button id="complete" title="Mark this task done">Complete</button>
+    <button id="complete" class="green" title="Mark this task done (Space)">Complete</button>
+    <button id="resume" title="Resume scanning below this task (s)">Scan</button>
   </div>
-  <div id="scanning">Scan in progress in the terminal…</div>
+
+  <div id="scan">
+    <div class="q">
+      Do you want to do <b class="cand" id="scan-candidate"></b>
+      more than <b id="scan-benchmark"></b>?
+    </div>
+    <div class="btns">
+      <button id="dot" class="green" title="Dot it (Enter / →)">Yes — dot it</button>
+      <button id="skip" title="Skip (↓)">No — skip</button>
+      <button id="back" title="Back to the previous candidate (↑)">↑ Back</button>
+      <button id="finish" title="Finish the scan (Esc)">Finish scan</button>
+    </div>
+  </div>
 
   <form id="addform">
     <input id="addtext" type="text" placeholder="Add a task…" autocomplete="off">
-    <button type="submit">Add</button>
+    <button type="submit" class="green">Add</button>
   </form>
 
   <div class="tabs">
@@ -86,7 +105,11 @@
   <ul id="list"></ul>
   <div id="empty">Nothing to show.</div>
 
-  <footer>shared with the terminal · updates automatically</footer>
+  <footer>
+    shared with the terminal · updates automatically ·
+    keys: <kbd>Enter</kbd> dot <kbd>↓</kbd> skip <kbd>↑</kbd> back
+    <kbd>Esc</kbd> finish <kbd>Space</kbd> complete <kbd>s</kbd> scan
+  </footer>
 
 <script>
   let state = null;
@@ -106,9 +129,16 @@
       b.classList.toggle("active", b.dataset.view === view));
 
     const isAction = state.mode === "action" && state.current !== null;
+    const isScan = state.mode === "preselect";
+
     $("#donow").style.display = isAction ? "flex" : "none";
     if (isAction) $("#donow-text").textContent = state.tasks[state.current].text;
-    $("#scanning").style.display = state.mode === "preselect" ? "block" : "none";
+
+    $("#scan").style.display = isScan ? "block" : "none";
+    if (isScan) {
+      $("#scan-candidate").textContent = state.tasks[state.cursor].text;
+      $("#scan-benchmark").textContent = state.tasks[state.benchmark].text;
+    }
 
     const ul = $("#list");
     ul.textContent = "";
@@ -117,7 +147,10 @@
       if (!FILTERS[view](t)) return;
       shown++;
       const li = document.createElement("li");
-      li.className = t.status + (isAction && i === state.current ? " donow" : "");
+      li.className = t.status;
+      if (isAction && i === state.current) li.classList.add("hilite");
+      if (isScan && i === state.cursor) li.classList.add("hilite");
+      if (isScan && i === state.benchmark) li.classList.add("benchmark");
       const marker = document.createElement("span");
       marker.className = "marker";
       marker.textContent = MARKERS[t.status];
@@ -145,9 +178,22 @@
     }
   }
 
+  async function act(op) {
+    if (!state) return;
+    try {
+      const res = await fetch(`/api/act?op=${op}&version=${state.version}`, { method: "POST" });
+      if (res.ok) apply(await res.json());
+      else refresh(true); // stale view or wrong mode: resync
+    } catch (_) { /* retry via polling */ }
+  }
+
   document.querySelectorAll(".tabs button").forEach((b) => {
     b.onclick = () => { view = b.dataset.view; if (state) render(); };
   });
+
+  for (const op of ["dot", "skip", "back", "finish", "complete", "resume"]) {
+    $("#" + op).onclick = () => act(op);
+  }
 
   $("#addform").onsubmit = async (e) => {
     e.preventDefault();
@@ -160,14 +206,21 @@
     } catch (_) { /* retry via polling */ }
   };
 
-  $("#complete").onclick = async () => {
-    if (!state) return;
-    try {
-      const res = await fetch("/api/complete?version=" + state.version, { method: "POST" });
-      if (res.ok) apply(await res.json());
-      else refresh(true); // stale view or scan started: resync
-    } catch (_) { /* retry via polling */ }
-  };
+  // Keyboard shortcuts mirroring the TUI (ignored while typing in the input).
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || !state) return;
+    const map =
+      state.mode === "preselect"
+        ? { Enter: "dot", ArrowRight: "dot", ArrowDown: "skip", ArrowUp: "back", Escape: "finish" }
+        : state.mode === "action"
+          ? { " ": "complete", s: "resume" }
+          : {};
+    const op = map[e.key];
+    if (op) {
+      e.preventDefault();
+      act(op);
+    }
+  });
 
   refresh();
   setInterval(refresh, 1500);

@@ -53,12 +53,17 @@ terminal.
 > but credentials are only base64-encoded on the wire — don't reuse a password
 > you care about.
 
-The web view can also make two safe mutations:
+The web view has the full functionality of the TUI:
 
+- **Scan** — during pre-selection the page shows the FVP question ("Do you want
+  to do X more than Y?") with **Yes / No / Back / Finish** buttons.
+- **Act** — the DO NOW banner has **Complete** and **Scan** (resume) buttons.
 - **Add a task** — appends an open task, exactly like `a` in the TUI.
-- **Complete** — marks the DO NOW task done (shown only when a scan isn't in
-  progress). A version guard means a stale browser tab can never complete the
-  wrong task; it just resyncs.
+- The TUI keyboard shortcuts work on the page too (`Enter`/`→` dot, `↓` skip,
+  `↑` back, `Esc` finish, `Space` complete, `s` scan).
+
+Every action carries a version guard, so a stale browser tab can never act on
+the wrong task — it just resyncs.
 
 Architecturally, the task list and FVP state machine live in a shared core
 (`src/session.rs`); the TUI and the web page are both presentation layers over
