@@ -8,7 +8,7 @@ FVP keeps a single, unordered list of everything you might do and helps you deci
 
 1. **Scan.** Starting from the top, the first task is automatically "dotted" (pre-selected) and becomes the *benchmark*. For each task below it you answer one question: *"Do I want to do this **more than** the benchmark?"* If yes, dot it — it becomes the new benchmark. If no, skip it.
 2. **Act.** The **last dotted task** is always the one you do next.
-3. **Repeat.** When you finish it, the scan resumes from that task's position to the end of the list, picking up anything new. When the dots run out, a fresh scan begins.
+3. **Repeat.** When you finish it, you drop back to the previous dotted task and keep working the chain; press `s` any time to re-scan for new or reconsidered tasks. (Classic FVP re-scans after every completion — here that step is manual so you can stay in flow.) When the dots run out, a fresh scan begins automatically.
 
 The result is a self-maintaining chain of dots that always surfaces a sensible next action without formal priorities.
 
@@ -35,8 +35,9 @@ By default tasks are stored in your platform data directory (e.g.
 ## Web view
 
 ```sh
-forster-todo --web        # serve on http://<your-ip>:9000
-forster-todo --web 8080   # or pick a port
+forster-todo --web                       # serve on http://<your-ip>:9000
+forster-todo --web 8080                  # or pick a port
+forster-todo --web --auth me:secret      # require HTTP Basic auth
 ```
 
 While the TUI runs, `--web` also serves a **web view** of the same in-memory
@@ -46,8 +47,11 @@ tabs — **Selected** (the dotted chain, with the DO NOW task highlighted),
 **Unfinished**, and **All** — and updates automatically as you work in the
 terminal.
 
-> Note: there is no authentication — anyone on your network can view and modify
-> the list while the app is running.
+> Note: without `--auth`, anyone on your network can view and modify the list
+> while the app is running. `--auth user:pass` adds HTTP Basic auth (the
+> browser will prompt once). Basic auth over plain HTTP keeps casual users out,
+> but credentials are only base64-encoded on the wire — don't reuse a password
+> you care about.
 
 The web view can also make two safe mutations:
 

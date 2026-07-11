@@ -82,7 +82,8 @@ impl Session {
         self.save()
     }
 
-    /// Complete the action ("DO NOW") task. No-op unless in Action mode.
+    /// Complete the action ("DO NOW") task. Stays in Action mode on the next
+    /// dotted task when one remains. No-op unless in Action mode.
     pub fn complete(&mut self) -> Result<()> {
         self.mode = fvp::complete(&mut self.tasks, self.mode);
         self.bump();

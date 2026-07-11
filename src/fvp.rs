@@ -156,9 +156,10 @@ pub fn resume_scan(tasks: &[Task], mode: Mode) -> Mode {
     }
 }
 
-/// Complete the action task, then determine what to do next per FVP:
-/// re-scan from the completed task's position to the end using the last
-/// remaining dotted task as benchmark; if no dots remain, start a fresh scan.
+/// Complete the action task. If other dots remain, stay in Action mode on the
+/// new last-dotted task (the previous link in the chain) so work can continue
+/// without re-scanning; FVP's post-completion re-scan is available on demand
+/// via [`resume_scan`]. Only when no dots remain does a fresh scan begin.
 pub fn complete(tasks: &mut [Task], mode: Mode) -> Mode {
     let Mode::Action { task: done_pos } = mode else {
         return mode;
@@ -166,13 +167,7 @@ pub fn complete(tasks: &mut [Task], mode: Mode) -> Mode {
     tasks[done_pos].status = Status::Done;
 
     match last_dotted(tasks) {
-        Some(nb) => match next_candidate(tasks, done_pos) {
-            Some(c) => Mode::Preselect {
-                benchmark: nb,
-                cursor: c,
-            },
-            None => Mode::Action { task: nb },
-        },
+        Some(nb) => Mode::Action { task: nb },
         None => start_scan(tasks),
     }
 }
@@ -279,9 +274,9 @@ mod tests {
     }
 
     #[test]
-    fn complete_rescans_from_completed_position() {
-        // Dot a and c; skip b. Complete c -> re-scan from after c using a as
-        // benchmark; d is the next candidate.
+    fn complete_stays_in_action_on_remaining_dot() {
+        // Dot a and c; skip b. Complete c -> stay in Action on a (the previous
+        // link in the chain); no automatic re-scan.
         let mut t = tasks(&["a", "b", "c", "d"]);
         let mode = start_scan(&mut t); // dot a, cursor=1(b)
         let mode = move_down(&t, mode); // cursor=2(c)
@@ -290,25 +285,30 @@ mod tests {
         assert_eq!(mode, Mode::Action { task: 2 });
         let mode = complete(&mut t, mode); // finish c
         assert_eq!(t[2].status, Status::Done);
-        // b (above completed pos) is NOT reconsidered; d is.
+        assert_eq!(mode, Mode::Action { task: 0 });
+        // Scanning is available on demand: resume offers candidates below a.
+        let mode = resume_scan(&t, mode);
         assert_eq!(
             mode,
             Mode::Preselect {
                 benchmark: 0,
-                cursor: 3
+                cursor: 1
             }
         );
     }
 
     #[test]
-    fn complete_picks_up_task_added_after_completed_position() {
+    fn resume_after_complete_picks_up_newly_added_task() {
         let mut t = tasks(&["a", "b"]);
         let mode = start_scan(&mut t); // dot a, cursor=1(b)
         let mode = dot(&mut t, mode); // dot b -> Action{task:1}
         assert_eq!(mode, Mode::Action { task: 1 });
         // Add a new task at the end (as the app does).
         t.push(Task::new("c"));
-        let mode = complete(&mut t, mode); // finish b, benchmark now a(0), rescan -> c(2)
+        let mode = complete(&mut t, mode); // finish b -> stay in Action on a
+        assert_eq!(mode, Mode::Action { task: 0 });
+        // An explicit resume offers the newly added task.
+        let mode = resume_scan(&t, mode);
         assert_eq!(
             mode,
             Mode::Preselect {

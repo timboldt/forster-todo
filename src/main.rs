@@ -26,6 +26,7 @@ const DEFAULT_WEB_PORT: u16 = 9000;
 struct Args {
     file: Option<PathBuf>,
     web: Option<u16>,
+    auth: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -39,7 +40,7 @@ fn main() -> Result<()> {
     // Start the web view (if requested) before touching the terminal, so a
     // port-in-use error prints normally.
     if let Some(port) = args.web {
-        web::spawn(session.clone(), port)?;
+        web::spawn(session.clone(), port, args.auth)?;
     }
 
     let mut app = App::new(session.clone());
@@ -70,6 +71,7 @@ fn parse_args() -> Result<Args> {
     let mut args = Args {
         file: None,
         web: None,
+        auth: None,
     };
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
@@ -89,13 +91,22 @@ fn parse_args() -> Result<Args> {
                 };
                 args.web = Some(port);
             }
+            "--auth" => {
+                let value = it.next().context("--auth requires a user:pass argument")?;
+                anyhow::ensure!(
+                    value.contains(':'),
+                    "--auth expects user:pass (missing ':')"
+                );
+                args.auth = Some(value);
+            }
             "-h" | "--help" => {
                 println!(
                     "forster-todo — Mark Forster's FVP in your terminal\n\n\
-                     USAGE:\n    forster-todo [--file <path>] [--web [port]]\n\n\
+                     USAGE:\n    forster-todo [--file <path>] [--web [port]] [--auth user:pass]\n\n\
                      OPTIONS:\n    \
-                     -f, --file <path>   Task file (default: platform data directory)\n    \
-                     -w, --web [port]    Also serve a web view on 0.0.0.0:PORT, reachable from the LAN (default {DEFAULT_WEB_PORT})"
+                     -f, --file <path>     Task file (default: platform data directory)\n    \
+                     -w, --web [port]      Also serve a web view on 0.0.0.0:PORT, reachable from the LAN (default {DEFAULT_WEB_PORT})\n    \
+                     --auth <user:pass>    Require HTTP Basic auth on the web view"
                 );
                 std::process::exit(0);
             }
