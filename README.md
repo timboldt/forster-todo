@@ -32,6 +32,22 @@ By default tasks are stored in your platform data directory (e.g.
 `~/Library/Application Support/forster-todo/tasks.txt` on macOS,
 `~/.local/share/forster-todo/tasks.txt` on Linux). Use `--file <path>` to override.
 
+## Web view
+
+```sh
+forster-todo --web        # serve on http://127.0.0.1:7357
+forster-todo --web 8080   # or pick a port
+```
+
+While the TUI runs, `--web` also serves a **readonly web view** of the same
+in-memory state on localhost. It offers three tabs — **Selected** (the dotted
+chain, with the DO NOW task highlighted), **Unfinished**, and **All** — and
+updates automatically as you work in the terminal.
+
+Architecturally, the task list and FVP state machine live in a shared core
+(`src/session.rs`); the TUI and the web page are both presentation layers over
+it, so they can never disagree about state.
+
 ## Keys
 
 | Key | Mode | Action |

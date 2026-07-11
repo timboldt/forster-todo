@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forster-todo</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    background: #0d1117; color: #e6edf3;
+    font: 16px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif;
+    max-width: 40rem; margin: 2rem auto; padding: 0 1rem;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 1rem; }
+  h1 .accent { color: #7ee787; }
+  #donow {
+    display: none; align-items: center; gap: .6rem;
+    background: #14381e; color: #7ee787; border: 1px solid #238636;
+    border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1rem;
+    font-weight: 600;
+  }
+  #donow .label { font-size: .75rem; letter-spacing: .08em; color: #3fb950; }
+  #scanning {
+    display: none; color: #e3b341; font-size: .9rem; margin-bottom: 1rem;
+  }
+  .tabs { display: flex; gap: .5rem; margin-bottom: .8rem; }
+  .tabs button {
+    background: #161b22; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; padding: .35rem .8rem; cursor: pointer; font-size: .9rem;
+  }
+  .tabs button.active { background: #14381e; color: #7ee787; border-color: #238636; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li {
+    display: flex; gap: .55rem; padding: .45rem .6rem;
+    border-bottom: 1px solid #21262d; white-space: pre-wrap;
+  }
+  li .marker { color: #8b949e; }
+  li.open { color: #c9d1d9; }
+  li.dotted { color: #e3b341; font-weight: 600; }
+  li.dotted .marker { color: #e3b341; }
+  li.done { color: #8b949e; text-decoration: line-through; }
+  li.donow { background: #14381e; border-radius: 6px; border-bottom-color: transparent; }
+  li.donow, li.donow .marker { color: #7ee787; }
+  #empty { color: #8b949e; padding: 1rem 0; display: none; }
+  footer { margin-top: 1.2rem; color: #484f58; font-size: .8rem; }
+</style>
+</head>
+<body>
+  <h1>forster-todo <span class="accent">· FVP</span></h1>
+
+  <div id="donow"><span class="label">DO NOW</span><span id="donow-text"></span></div>
+  <div id="scanning">Scan in progress in the terminal…</div>
+
+  <div class="tabs">
+    <button data-view="selected">Selected</button>
+    <button data-view="unfinished">Unfinished</button>
+    <button data-view="all">All</button>
+  </div>
+
+  <ul id="list"></ul>
+  <div id="empty">Nothing to show.</div>
+
+  <footer>readonly view · updates automatically</footer>
+
+<script>
+  let state = null;
+  let view = "selected";
+
+  const $ = (sel) => document.querySelector(sel);
+
+  const FILTERS = {
+    selected:   (t) => t.status === "dotted",
+    unfinished: (t) => t.status !== "done",
+    all:        () => true,
+  };
+  const MARKERS = { open: "[ ]", dotted: "[·]", done: "[x]" };
+
+  function render() {
+    document.querySelectorAll(".tabs button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === view));
+
+    const isAction = state.mode === "action" && state.current !== null;
+    $("#donow").style.display = isAction ? "flex" : "none";
+    if (isAction) $("#donow-text").textContent = state.tasks[state.current].text;
+    $("#scanning").style.display = state.mode === "preselect" ? "block" : "none";
+
+    const ul = $("#list");
+    ul.textContent = "";
+    let shown = 0;
+    state.tasks.forEach((t, i) => {
+      if (!FILTERS[view](t)) return;
+      shown++;
+      const li = document.createElement("li");
+      li.className = t.status + (isAction && i === state.current ? " donow" : "");
+      const marker = document.createElement("span");
+      marker.className = "marker";
+      marker.textContent = MARKERS[t.status];
+      const text = document.createElement("span");
+      text.textContent = t.text;
+      li.append(marker, text);
+      ul.appendChild(li);
+    });
+    $("#empty").style.display = shown ? "none" : "block";
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch("/api/tasks");
+      if (!res.ok) return;
+      const next = await res.json();
+      if (!state || next.version !== state.version) {
+        state = next;
+        render();
+      }
+    } catch (_) {
+      // Server gone (TUI closed); keep the last view and retry quietly.
+    }
+  }
+
+  document.querySelectorAll(".tabs button").forEach((b) => {
+    b.onclick = () => { view = b.dataset.view; if (state) render(); };
+  });
+
+  refresh();
+  setInterval(refresh, 1500);
+</script>
+</body>
+</html>

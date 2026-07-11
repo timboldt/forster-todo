@@ -3,11 +3,15 @@
 
 mod app;
 mod fvp;
+mod session;
 mod storage;
 mod task;
 mod ui;
+mod web;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event};
@@ -15,49 +19,92 @@ use directories::ProjectDirs;
 use ratatui::DefaultTerminal;
 
 use app::App;
+use session::Session;
+
+const DEFAULT_WEB_PORT: u16 = 7357;
+
+struct Args {
+    file: Option<PathBuf>,
+    web: Option<u16>,
+}
 
 fn main() -> Result<()> {
-    let path = resolve_path()?;
-    let tasks = storage::load(&path)?;
-    let mut app = App::new(path, tasks);
+    let args = parse_args()?;
+    let path = match args.file {
+        Some(p) => p,
+        None => default_path()?,
+    };
+    let session = Arc::new(Mutex::new(Session::load(path)?));
 
+    // Start the web view (if requested) before touching the terminal, so a
+    // port-in-use error prints normally.
+    if let Some(port) = args.web {
+        web::spawn(session.clone(), port)?;
+    }
+
+    let mut app = App::new(session.clone());
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &session, &mut app);
     ratatui::restore();
     result
 }
 
-/// The main event loop: draw, wait for a key, dispatch, repeat.
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+/// The main event loop. Uses a polling timeout rather than a blocking read so
+/// changes made through the web view show up without a keypress.
+fn run(terminal: &mut DefaultTerminal, session: &Arc<Mutex<Session>>, app: &mut App) -> Result<()> {
     while !app.should_quit {
-        terminal.draw(|frame| ui::draw(frame, app))?;
-        if let Event::Key(key) = event::read()? {
+        {
+            let session = session.lock().expect("session lock poisoned");
+            terminal.draw(|frame| ui::draw(frame, &session, app))?;
+        }
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+        {
             app.on_key(key)?;
         }
     }
     Ok(())
 }
 
-/// Determine the task file: `--file <path>` / `-f <path>` if given, otherwise
-/// the platform data directory (e.g. ~/Library/Application Support/forster-todo).
-fn resolve_path() -> Result<PathBuf> {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        None => default_path(),
-        Some("--file" | "-f") => {
-            let value = args.next().context("--file requires a path argument")?;
-            Ok(PathBuf::from(value))
+fn parse_args() -> Result<Args> {
+    let mut args = Args {
+        file: None,
+        web: None,
+    };
+    let mut it = std::env::args().skip(1).peekable();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--file" | "-f" => {
+                let value = it.next().context("--file requires a path argument")?;
+                args.file = Some(PathBuf::from(value));
+            }
+            "--web" | "-w" => {
+                // Optional port; defaults to DEFAULT_WEB_PORT.
+                let port = match it.peek().and_then(|p| p.parse::<u16>().ok()) {
+                    Some(p) => {
+                        it.next();
+                        p
+                    }
+                    None => DEFAULT_WEB_PORT,
+                };
+                args.web = Some(port);
+            }
+            "-h" | "--help" => {
+                println!(
+                    "forster-todo — Mark Forster's FVP in your terminal\n\n\
+                     USAGE:\n    forster-todo [--file <path>] [--web [port]]\n\n\
+                     OPTIONS:\n    \
+                     -f, --file <path>   Task file (default: platform data directory)\n    \
+                     -w, --web [port]    Also serve a web view on http://127.0.0.1:PORT (default {DEFAULT_WEB_PORT})"
+                );
+                std::process::exit(0);
+            }
+            other => {
+                anyhow::bail!("unknown argument: {other} (try --help)");
+            }
         }
-        Some("-h" | "--help") => {
-            println!(
-                "forster-todo — Mark Forster's FVP in your terminal\n\n\
-                 USAGE:\n    forster-todo [--file <path>]\n\n\
-                 Without --file, tasks are stored in the platform data directory."
-            );
-            std::process::exit(0);
-        }
-        Some(other) => anyhow::bail!("unknown argument: {other} (try --help)"),
     }
+    Ok(args)
 }
 
 /// The default task file in the platform data directory.

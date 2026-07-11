@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 use crate::app::App;
 use crate::fvp::Mode;
+use crate::session::Session;
 use crate::task::{Status, Task};
 
 /// Original indices of the tasks to display, per mode:
@@ -26,7 +27,7 @@ fn visible_indices(tasks: &[Task], mode: Mode) -> Vec<usize> {
 }
 
 /// Render the whole UI for the current frame.
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, session: &Session, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // title
         Constraint::Min(1),    // task list
@@ -35,8 +36,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .split(frame.area());
 
     draw_title(frame, chunks[0]);
-    draw_list(frame, chunks[1], app);
-    draw_status(frame, chunks[2], app);
+    draw_list(frame, chunks[1], session, app);
+    draw_status(frame, chunks[2], session, app);
 
     if app.show_help {
         draw_help(frame);
@@ -58,13 +59,13 @@ fn draw_title(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(title), area);
 }
 
-fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
-    let selected = match app.mode {
+fn draw_list(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
+    let selected = match session.mode {
         Mode::Preselect { cursor, .. } => Some(cursor),
         Mode::Action { task } => Some(task),
         Mode::Empty => None,
     };
-    let benchmark = match app.mode {
+    let benchmark = match session.mode {
         Mode::Preselect { benchmark, .. } => Some(benchmark),
         _ => None,
     };
@@ -74,14 +75,14 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
     let filter_mode = if app.input.is_some() {
         Mode::Empty
     } else {
-        app.mode
+        session.mode
     };
-    let visible = visible_indices(&app.tasks, filter_mode);
+    let visible = visible_indices(&session.tasks, filter_mode);
 
     let items: Vec<ListItem> = visible
         .iter()
         .map(|&i| {
-            let t = &app.tasks[i];
+            let t = &session.tasks[i];
             let (marker, mut style) = match t.status {
                 Status::Done => (
                     "[x] ",
@@ -131,7 +132,7 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_status(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
     let block = Block::default().borders(Borders::ALL);
 
     // Adding a task takes over the status bar as an input line.
@@ -149,7 +150,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let line = match app.mode {
+    let line = match session.mode {
         Mode::Empty => Line::from(vec![
             Span::styled("No active tasks. ", Style::default().fg(Color::Green)),
             Span::styled("a", key()),
@@ -160,7 +161,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Preselect { benchmark, .. } => Line::from(vec![
             Span::styled("Do more than ", Style::default().fg(Color::White)),
             Span::styled(
-                format!("«{}»", app.tasks[benchmark].text),
+                format!("«{}»", session.tasks[benchmark].text),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -183,7 +184,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                app.tasks[task].text.clone(),
+                session.tasks[task].text.clone(),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("   "),

@@ -1,42 +1,35 @@
-//! Application state and key handling.
+//! TUI presentation state and key handling. All domain state lives in the
+//! shared [`Session`]; this layer only owns terminal-specific concerns (the
+//! add-task input buffer, the help overlay, and the quit flag).
 
-use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
-use crate::fvp::{self, Mode};
-use crate::storage;
-use crate::task::Task;
+use crate::fvp::Mode;
+use crate::session::Session;
 
-/// The full application state.
 pub struct App {
-    pub tasks: Vec<Task>,
-    pub mode: Mode,
+    pub session: Arc<Mutex<Session>>,
     /// `Some` while the user is typing a new task in the add overlay.
     pub input: Option<String>,
     pub show_help: bool,
     pub should_quit: bool,
-    path: PathBuf,
 }
 
 impl App {
-    /// Build the app from a loaded task list, establishing the initial mode.
-    pub fn new(path: PathBuf, mut tasks: Vec<Task>) -> Self {
-        let mode = fvp::initial_mode(&mut tasks);
+    pub fn new(session: Arc<Mutex<Session>>) -> Self {
         App {
-            tasks,
-            mode,
+            session,
             input: None,
             show_help: false,
             should_quit: false,
-            path,
         }
     }
 
-    /// Persist the current task list to disk.
-    pub fn save(&self) -> Result<()> {
-        storage::save(&self.path, &self.tasks)
+    fn session(&self) -> MutexGuard<'_, Session> {
+        self.session.lock().expect("session lock poisoned")
     }
 
     /// Handle a key press, mutating state and saving when the list changes.
@@ -62,7 +55,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => {
-                self.save()?;
+                self.session().save()?;
                 self.should_quit = true;
             }
             KeyCode::Char('?') => self.show_help = true,
@@ -74,24 +67,19 @@ impl App {
 
     /// Keys that depend on the current FVP mode.
     fn on_mode_key(&mut self, key: KeyEvent) -> Result<()> {
-        match self.mode {
+        let mut session = self.session.lock().expect("session lock poisoned");
+        match session.mode {
             Mode::Preselect { .. } => match key.code {
-                KeyCode::Up => self.mode = fvp::move_up(&self.tasks, self.mode),
-                KeyCode::Down => self.mode = fvp::move_down(&self.tasks, self.mode),
-                KeyCode::Enter | KeyCode::Right => {
-                    self.mode = fvp::dot(&mut self.tasks, self.mode);
-                    self.save()?;
-                }
-                KeyCode::Esc => self.mode = fvp::finish_scan(self.mode),
+                KeyCode::Up => session.move_up(),
+                KeyCode::Down => session.move_down(),
+                KeyCode::Enter | KeyCode::Right => session.dot()?,
+                KeyCode::Esc => session.finish_scan(),
                 _ => {}
             },
             Mode::Action { .. } => match key.code {
-                KeyCode::Char(' ') => {
-                    self.mode = fvp::complete(&mut self.tasks, self.mode);
-                    self.save()?;
-                }
+                KeyCode::Char(' ') => session.complete()?,
                 // Resume scanning to dot more candidates below the current task.
-                KeyCode::Char('s') => self.mode = fvp::resume_scan(&self.tasks, self.mode),
+                KeyCode::Char('s') => session.resume_scan(),
                 _ => {}
             },
             Mode::Empty => {}
@@ -108,7 +96,7 @@ impl App {
             KeyCode::Enter => {
                 let text = self.input.as_deref().unwrap_or_default().trim().to_string();
                 if !text.is_empty() {
-                    self.add_task(text)?;
+                    self.session().add(text)?;
                 }
                 // Stay in add mode with a cleared buffer to enter another task.
                 self.input = Some(String::new());
@@ -127,22 +115,23 @@ impl App {
         }
         Ok(())
     }
-
-    /// Append a task and, if the list was empty, begin a scan.
-    fn add_task(&mut self, text: String) -> Result<()> {
-        self.tasks.push(Task::new(text));
-        if self.mode == Mode::Empty {
-            self.mode = fvp::start_scan(&mut self.tasks);
-        }
-        self.save()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::Task;
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::path::Path;
+
+    fn app_with(dir: &Path, tasks: Vec<Task>) -> App {
+        let session = Session::new(dir.join("tasks.txt"), tasks);
+        App::new(Arc::new(Mutex::new(session)))
+    }
+
+    fn mode(app: &App) -> Mode {
+        app.session().mode
+    }
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
@@ -162,76 +151,74 @@ mod tests {
         press(app, KeyCode::Esc); // exit sticky add mode
     }
 
-    fn reload(path: &Path) -> App {
-        App::new(path.to_path_buf(), crate::storage::load(path).unwrap())
-    }
-
     #[test]
     fn adding_to_empty_list_starts_a_scan_and_persists() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tasks.txt");
-        let mut app = App::new(path.clone(), vec![]);
-        assert_eq!(app.mode, Mode::Empty);
+        let mut app = app_with(dir.path(), vec![]);
+        assert_eq!(mode(&app), Mode::Empty);
 
         add(&mut app, "first task");
         // Single active task -> dotted, and it is the action task.
-        assert_eq!(app.mode, Mode::Action { task: 0 });
-        assert!(app.tasks[0].is_dotted());
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
+        assert!(app.session().tasks[0].is_dotted());
         // Persisted with the dotted marker.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[.] first task\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("tasks.txt")).unwrap(),
+            "[.] first task\n"
+        );
     }
 
     #[test]
     fn empty_input_is_not_added() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = App::new(dir.path().join("tasks.txt"), vec![]);
+        let mut app = app_with(dir.path(), vec![]);
         press(&mut app, KeyCode::Char('a'));
         type_text(&mut app, "   ");
         press(&mut app, KeyCode::Enter);
-        assert!(app.tasks.is_empty());
-        assert_eq!(app.mode, Mode::Empty);
+        assert!(app.session().tasks.is_empty());
+        assert_eq!(mode(&app), Mode::Empty);
     }
 
     #[test]
     fn add_mode_is_sticky_until_esc() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = App::new(dir.path().join("tasks.txt"), vec![]);
+        let mut app = app_with(dir.path(), vec![]);
 
         press(&mut app, KeyCode::Char('a'));
         type_text(&mut app, "one");
         press(&mut app, KeyCode::Enter);
         // Still in add mode with a cleared buffer, ready for the next task.
         assert_eq!(app.input.as_deref(), Some(""));
-        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.session().tasks.len(), 1);
 
         type_text(&mut app, "two");
         press(&mut app, KeyCode::Enter);
-        assert_eq!(app.tasks.len(), 2);
+        assert_eq!(app.session().tasks.len(), 2);
         assert_eq!(app.input.as_deref(), Some(""));
 
         // Esc leaves add mode.
         press(&mut app, KeyCode::Esc);
         assert!(app.input.is_none());
-        assert_eq!(app.tasks[0].text, "one");
-        assert_eq!(app.tasks[1].text, "two");
+        assert_eq!(app.session().tasks[0].text, "one");
+        assert_eq!(app.session().tasks[1].text, "two");
     }
 
     #[test]
     fn full_cycle_persists_and_survives_reload() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.txt");
-        let mut app = App::new(path.clone(), vec![]);
+        let mut app = app_with(dir.path(), vec![]);
 
         add(&mut app, "A");
         add(&mut app, "B");
         add(&mut app, "C");
         // A got dotted on first add; B and C are open. Action is A.
-        assert_eq!(app.mode, Mode::Action { task: 0 });
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
 
         // Complete A -> only dot removed -> fresh scan dots B, cursor at C.
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(
-            app.mode,
+            mode(&app),
             Mode::Preselect {
                 benchmark: 1,
                 cursor: 2
@@ -240,8 +227,8 @@ mod tests {
 
         // Dot C -> it becomes the last dotted and the action task.
         press(&mut app, KeyCode::Enter);
-        assert_eq!(app.mode, Mode::Action { task: 2 });
-        assert!(app.tasks[2].is_dotted());
+        assert_eq!(mode(&app), Mode::Action { task: 2 });
+        assert!(app.session().tasks[2].is_dotted());
 
         // File reflects: A done, B dotted, C dotted.
         assert_eq!(
@@ -250,23 +237,25 @@ mod tests {
         );
 
         // Reloading resumes on the last dotted task (C).
-        let reloaded = reload(&path);
+        let reloaded = Session::load(path).unwrap();
         assert_eq!(reloaded.mode, Mode::Action { task: 2 });
     }
 
     #[test]
     fn s_key_resumes_scan_from_action() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tasks.txt");
         // Three open tasks: initial scan dots A, offers B.
-        let mut app = App::new(path, vec![Task::new("A"), Task::new("B"), Task::new("C")]);
+        let mut app = app_with(
+            dir.path(),
+            vec![Task::new("A"), Task::new("B"), Task::new("C")],
+        );
         // Esc out of the scan to land in Action on A.
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.mode, Mode::Action { task: 0 });
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
         // 's' re-opens scanning below A.
         press(&mut app, KeyCode::Char('s'));
         assert_eq!(
-            app.mode,
+            mode(&app),
             Mode::Preselect {
                 benchmark: 0,
                 cursor: 1
@@ -277,17 +266,16 @@ mod tests {
     #[test]
     fn esc_finishes_scan_to_benchmark() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tasks.txt");
         // Two open tasks; initial scan dots A and offers B as candidate.
-        let mut app = App::new(path, vec![Task::new("A"), Task::new("B")]);
+        let mut app = app_with(dir.path(), vec![Task::new("A"), Task::new("B")]);
         assert_eq!(
-            app.mode,
+            mode(&app),
             Mode::Preselect {
                 benchmark: 0,
                 cursor: 1
             }
         );
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.mode, Mode::Action { task: 0 });
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
     }
 }
