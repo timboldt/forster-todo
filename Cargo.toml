@@ -2,6 +2,12 @@
 name = "forster-todo"
 version = "0.1.0"
 edition = "2024"
+authors = ["Tim Boldt <tim.boldt@gmail.com>"]
+description = "A terminal task manager implementing Mark Forster's Final Version Perfected (FVP) methodology"
+license = "MIT"
+readme = "README.md"
+keywords = ["tui", "todo", "fvp", "productivity", "task-manager"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.103"
