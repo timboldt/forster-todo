@@ -1,14 +1,20 @@
 //! Embedded web view: a tiny_http server on a background thread, sharing the
-//! same [`Session`] as the TUI. Readonly for now: the browser gets one static
-//! page plus a JSON snapshot endpoint.
+//! same [`Session`] as the TUI. The browser gets one static page plus a small
+//! JSON API:
 //!
-//! - `GET /`           the page (embedded at compile time)
-//! - `GET /api/tasks`  snapshot: `{version, mode, current, tasks}`
+//! - `GET  /`                       the page (embedded at compile time)
+//! - `GET  /api/tasks`              snapshot: `{version, mode, current, tasks}`
+//! - `POST /api/add`                body = task text; appends an open task
+//! - `POST /api/complete?version=N` completes the DO NOW task; the version
+//!   guard (409 on mismatch) prevents acting on a stale view
 //!
 //! `version` is the session's change counter; the page polls and re-renders
-//! only when it moves. The server binds 127.0.0.1 only: this is a personal,
-//! single-user view.
+//! only when it moves. All mutations go through the same [`Session`] the TUI
+//! uses, so the two views cannot diverge. The server binds 0.0.0.0 so other
+//! devices on the LAN can use it; there is no authentication, so anyone on
+//! the network can view and modify the list while the app is running.
 
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -21,10 +27,13 @@ use crate::task::Status;
 
 const INDEX_HTML: &str = include_str!("web/index.html");
 
-/// Start the web server on 127.0.0.1:`port` and serve requests on a
-/// background thread for the life of the process.
+/// Maximum accepted request body (task text) in bytes.
+const MAX_BODY: u64 = 16 * 1024;
+
+/// Start the web server on 0.0.0.0:`port` (reachable from the LAN) and serve
+/// requests on a background thread for the life of the process.
 pub fn spawn(session: Arc<Mutex<Session>>, port: u16) -> Result<()> {
-    let server = Server::http(("127.0.0.1", port))
+    let server = Server::http(("0.0.0.0", port))
         .map_err(|e| anyhow::anyhow!("starting web server on port {port}: {e}"))?;
     thread::spawn(move || {
         for request in server.incoming_requests() {
@@ -35,18 +44,64 @@ pub fn spawn(session: Arc<Mutex<Session>>, port: u16) -> Result<()> {
     Ok(())
 }
 
-fn handle(request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
+fn handle(mut request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
     let url = request.url().to_string();
-    let path = url.split_once('?').map_or(url.as_str(), |(p, _)| p);
+    let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
 
-    match (request.method(), path) {
+    match (request.method().clone(), path) {
         (Method::Get, "/") => respond(request, 200, "text/html; charset=utf-8", INDEX_HTML),
         (Method::Get, "/api/tasks") => {
             let session = session.lock().expect("session lock poisoned");
             respond_json(request, 200, &snapshot_json(&session))
         }
+        (Method::Post, "/api/add") => {
+            let mut text = String::new();
+            request
+                .as_reader()
+                .take(MAX_BODY)
+                .read_to_string(&mut text)?;
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return respond_json(request, 400, r#"{"error":"empty task text"}"#);
+            }
+            let mut session = session.lock().expect("session lock poisoned");
+            match session.add(text) {
+                Ok(()) => respond_json(request, 200, &snapshot_json(&session)),
+                Err(_) => respond_json(request, 500, r#"{"error":"failed to save"}"#),
+            }
+        }
+        (Method::Post, "/api/complete") => {
+            let Some(expected) = query_param(query, "version").and_then(|v| v.parse::<u64>().ok())
+            else {
+                return respond_json(request, 400, r#"{"error":"version parameter required"}"#);
+            };
+            let mut session = session.lock().expect("session lock poisoned");
+            if session.version() != expected {
+                return respond_json(request, 409, r#"{"error":"stale version"}"#);
+            }
+            if session.action_task().is_none() {
+                return respond_json(
+                    request,
+                    409,
+                    r#"{"error":"no action task (scan in progress)"}"#,
+                );
+            }
+            match session.complete() {
+                Ok(()) => respond_json(request, 200, &snapshot_json(&session)),
+                Err(_) => respond_json(request, 500, r#"{"error":"failed to save"}"#),
+            }
+        }
         _ => respond_json(request, 404, r#"{"error":"not found"}"#),
     }
+}
+
+/// First value for `name` in a query string like `a=1&b=2`.
+fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v)
 }
 
 fn respond(request: Request, status: u16, content_type: &str, body: &str) -> Result<()> {
@@ -130,6 +185,14 @@ mod tests {
         assert_eq!(json_escape("tab\there"), "tab\\there");
         assert_eq!(json_escape("ctrl\u{1}"), "ctrl\\u0001");
         assert_eq!(json_escape("plain — unicode ok"), "plain — unicode ok");
+    }
+
+    #[test]
+    fn query_param_finds_values() {
+        assert_eq!(query_param("version=42", "version"), Some("42"));
+        assert_eq!(query_param("a=1&version=7", "version"), Some("7"));
+        assert_eq!(query_param("a=1", "version"), None);
+        assert_eq!(query_param("", "version"), None);
     }
 
     #[test]

@@ -20,9 +20,26 @@
     font-weight: 600;
   }
   #donow .label { font-size: .75rem; letter-spacing: .08em; color: #3fb950; }
+  #donow-text { flex: 1; }
+  #complete {
+    background: #238636; color: #fff; border: none; border-radius: 6px;
+    padding: .35rem .8rem; cursor: pointer; font-size: .85rem; font-weight: 600;
+  }
+  #complete:hover { background: #2ea043; }
   #scanning {
     display: none; color: #e3b341; font-size: .9rem; margin-bottom: 1rem;
   }
+  #addform { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  #addtext {
+    flex: 1; background: #161b22; color: #e6edf3; border: 1px solid #30363d;
+    border-radius: 6px; padding: .45rem .6rem; font-size: .95rem;
+  }
+  #addtext:focus { outline: none; border-color: #238636; }
+  #addform button {
+    background: #238636; color: #fff; border: none; border-radius: 6px;
+    padding: .45rem .9rem; cursor: pointer; font-weight: 600;
+  }
+  #addform button:hover { background: #2ea043; }
   .tabs { display: flex; gap: .5rem; margin-bottom: .8rem; }
   .tabs button {
     background: #161b22; color: #e6edf3; border: 1px solid #30363d;
@@ -48,8 +65,17 @@
 <body>
   <h1>forster-todo <span class="accent">· FVP</span></h1>
 
-  <div id="donow"><span class="label">DO NOW</span><span id="donow-text"></span></div>
+  <div id="donow">
+    <span class="label">DO NOW</span>
+    <span id="donow-text"></span>
+    <button id="complete" title="Mark this task done">Complete</button>
+  </div>
   <div id="scanning">Scan in progress in the terminal…</div>
+
+  <form id="addform">
+    <input id="addtext" type="text" placeholder="Add a task…" autocomplete="off">
+    <button type="submit">Add</button>
+  </form>
 
   <div class="tabs">
     <button data-view="selected">Selected</button>
@@ -60,7 +86,7 @@
   <ul id="list"></ul>
   <div id="empty">Nothing to show.</div>
 
-  <footer>readonly view · updates automatically</footer>
+  <footer>shared with the terminal · updates automatically</footer>
 
 <script>
   let state = null;
@@ -103,15 +129,17 @@
     $("#empty").style.display = shown ? "none" : "block";
   }
 
-  async function refresh() {
+  function apply(next) {
+    state = next;
+    render();
+  }
+
+  async function refresh(force) {
     try {
       const res = await fetch("/api/tasks");
       if (!res.ok) return;
       const next = await res.json();
-      if (!state || next.version !== state.version) {
-        state = next;
-        render();
-      }
+      if (force || !state || next.version !== state.version) apply(next);
     } catch (_) {
       // Server gone (TUI closed); keep the last view and retry quietly.
     }
@@ -120,6 +148,26 @@
   document.querySelectorAll(".tabs button").forEach((b) => {
     b.onclick = () => { view = b.dataset.view; if (state) render(); };
   });
+
+  $("#addform").onsubmit = async (e) => {
+    e.preventDefault();
+    const text = $("#addtext").value.trim();
+    if (!text) return;
+    $("#addtext").value = "";
+    try {
+      const res = await fetch("/api/add", { method: "POST", body: text });
+      if (res.ok) apply(await res.json());
+    } catch (_) { /* retry via polling */ }
+  };
+
+  $("#complete").onclick = async () => {
+    if (!state) return;
+    try {
+      const res = await fetch("/api/complete?version=" + state.version, { method: "POST" });
+      if (res.ok) apply(await res.json());
+      else refresh(true); // stale view or scan started: resync
+    } catch (_) { /* retry via polling */ }
+  };
 
   refresh();
   setInterval(refresh, 1500);

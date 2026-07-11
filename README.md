@@ -35,18 +35,31 @@ By default tasks are stored in your platform data directory (e.g.
 ## Web view
 
 ```sh
-forster-todo --web        # serve on http://127.0.0.1:7357
+forster-todo --web        # serve on http://<your-ip>:9000
 forster-todo --web 8080   # or pick a port
 ```
 
-While the TUI runs, `--web` also serves a **readonly web view** of the same
-in-memory state on localhost. It offers three tabs — **Selected** (the dotted
-chain, with the DO NOW task highlighted), **Unfinished**, and **All** — and
-updates automatically as you work in the terminal.
+While the TUI runs, `--web` also serves a **web view** of the same in-memory
+state. It listens on all interfaces (`0.0.0.0`), so you can open it from your
+phone or another machine on the LAN at `http://<your-ip>:9000`. It offers three
+tabs — **Selected** (the dotted chain, with the DO NOW task highlighted),
+**Unfinished**, and **All** — and updates automatically as you work in the
+terminal.
+
+> Note: there is no authentication — anyone on your network can view and modify
+> the list while the app is running.
+
+The web view can also make two safe mutations:
+
+- **Add a task** — appends an open task, exactly like `a` in the TUI.
+- **Complete** — marks the DO NOW task done (shown only when a scan isn't in
+  progress). A version guard means a stale browser tab can never complete the
+  wrong task; it just resyncs.
 
 Architecturally, the task list and FVP state machine live in a shared core
 (`src/session.rs`); the TUI and the web page are both presentation layers over
-it, so they can never disagree about state.
+it, so they can never disagree about state. Changes made in the browser appear
+in the terminal immediately, and vice versa.
 
 ## Keys
 

@@ -21,7 +21,7 @@ use ratatui::DefaultTerminal;
 use app::App;
 use session::Session;
 
-const DEFAULT_WEB_PORT: u16 = 7357;
+const DEFAULT_WEB_PORT: u16 = 9000;
 
 struct Args {
     file: Option<PathBuf>,
@@ -95,7 +95,7 @@ fn parse_args() -> Result<Args> {
                      USAGE:\n    forster-todo [--file <path>] [--web [port]]\n\n\
                      OPTIONS:\n    \
                      -f, --file <path>   Task file (default: platform data directory)\n    \
-                     -w, --web [port]    Also serve a web view on http://127.0.0.1:PORT (default {DEFAULT_WEB_PORT})"
+                     -w, --web [port]    Also serve a web view on 0.0.0.0:PORT, reachable from the LAN (default {DEFAULT_WEB_PORT})"
                 );
                 std::process::exit(0);
             }
