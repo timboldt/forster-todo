@@ -5,7 +5,25 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 
 use crate::app::App;
 use crate::fvp::Mode;
-use crate::task::Status;
+use crate::task::{Status, Task};
+
+/// Original indices of the tasks to display, per mode:
+/// - **Preselect**: hide open tasks above the benchmark (the bottom-most dotted
+///   task) — they were skipped and are out of the running for this scan.
+/// - **Action**: show only the dotted chain (the queue); the last one is "DO NOW".
+/// - **Empty**: show everything (i.e. any completed-task history).
+fn visible_indices(tasks: &[Task], mode: Mode) -> Vec<usize> {
+    tasks
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| match mode {
+            Mode::Preselect { benchmark, .. } => !(t.is_open() && *i < benchmark),
+            Mode::Action { .. } => t.is_dotted(),
+            Mode::Empty => true,
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
 
 /// Render the whole UI for the current frame.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -51,11 +69,19 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         _ => None,
     };
 
-    let items: Vec<ListItem> = app
-        .tasks
+    // While adding tasks, show the whole list for context rather than the
+    // (possibly narrow) filtered view of the underlying mode.
+    let filter_mode = if app.input.is_some() {
+        Mode::Empty
+    } else {
+        app.mode
+    };
+    let visible = visible_indices(&app.tasks, filter_mode);
+
+    let items: Vec<ListItem> = visible
         .iter()
-        .enumerate()
-        .map(|(i, t)| {
+        .map(|&i| {
+            let t = &app.tasks[i];
             let (marker, mut style) = match t.status {
                 Status::Done => (
                     "[x] ",
@@ -85,6 +111,9 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
             ]))
         })
         .collect();
+
+    // Map the selected task's original index to its row in the filtered list.
+    let selected = selected.and_then(|s| visible.iter().position(|&i| i == s));
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Tasks "))
@@ -233,4 +262,72 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         Constraint::Percentage((100 - percent_x) / 2),
     ])
     .split(vertical[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(text: &str, status: Status) -> Task {
+        Task {
+            text: text.into(),
+            status,
+        }
+    }
+
+    #[test]
+    fn empty_mode_shows_everything() {
+        let tasks = vec![
+            task("a", Status::Done),
+            task("b", Status::Open),
+            task("c", Status::Dotted),
+        ];
+        assert_eq!(visible_indices(&tasks, Mode::Empty), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn scanning_hides_skipped_open_tasks_above_benchmark() {
+        // Chain: a dotted(0), b skipped(1), c dotted+benchmark(2),
+        // d open candidate(3), e open candidate below benchmark shown(4).
+        let tasks = vec![
+            task("a", Status::Dotted),
+            task("b", Status::Open), // skipped, above benchmark -> hidden
+            task("c", Status::Dotted),
+            task("d", Status::Open), // candidate below benchmark -> shown
+            task("e", Status::Open),
+        ];
+        let mode = Mode::Preselect {
+            benchmark: 2,
+            cursor: 3,
+        };
+        assert_eq!(visible_indices(&tasks, mode), vec![0, 2, 3, 4]);
+    }
+
+    #[test]
+    fn scanning_keeps_dotted_and_done_above_benchmark() {
+        // Only *open* skipped tasks are hidden; dotted and done stay visible.
+        let tasks = vec![
+            task("done-above", Status::Done),
+            task("dotted-above", Status::Dotted),
+            task("skipped", Status::Open), // hidden
+            task("benchmark", Status::Dotted),
+        ];
+        let mode = Mode::Preselect {
+            benchmark: 3,
+            cursor: 3,
+        };
+        assert_eq!(visible_indices(&tasks, mode), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn action_mode_shows_only_the_dotted_chain() {
+        let tasks = vec![
+            task("done", Status::Done),
+            task("dotted-1", Status::Dotted),
+            task("open", Status::Open),
+            task("dotted-2 (DO NOW)", Status::Dotted),
+        ];
+        let mode = Mode::Action { task: 3 };
+        assert_eq!(visible_indices(&tasks, mode), vec![1, 3]);
+    }
 }
