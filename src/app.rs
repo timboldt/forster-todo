@@ -85,35 +85,44 @@ impl App {
                 KeyCode::Esc => self.mode = fvp::finish_scan(self.mode),
                 _ => {}
             },
-            Mode::Action { .. } => {
-                if key.code == KeyCode::Char(' ') {
+            Mode::Action { .. } => match key.code {
+                KeyCode::Char(' ') => {
                     self.mode = fvp::complete(&mut self.tasks, self.mode);
                     self.save()?;
                 }
-            }
+                // Resume scanning to dot more candidates below the current task.
+                KeyCode::Char('s') => self.mode = fvp::resume_scan(&self.tasks, self.mode),
+                _ => {}
+            },
             Mode::Empty => {}
         }
         Ok(())
     }
 
-    /// Keys while the add-task input overlay is open.
+    /// Keys while the add-task input overlay is open. Add mode is "sticky":
+    /// Enter commits the current entry and clears the buffer for the next one;
+    /// Esc leaves add mode and returns to the previous mode.
     fn on_input_key(&mut self, key: KeyEvent) -> Result<()> {
-        let Some(buf) = self.input.as_mut() else {
-            return Ok(());
-        };
         match key.code {
             KeyCode::Esc => self.input = None,
             KeyCode::Enter => {
-                let text = buf.trim().to_string();
-                self.input = None;
+                let text = self.input.as_deref().unwrap_or_default().trim().to_string();
                 if !text.is_empty() {
                     self.add_task(text)?;
                 }
+                // Stay in add mode with a cleared buffer to enter another task.
+                self.input = Some(String::new());
             }
             KeyCode::Backspace => {
-                buf.pop();
+                if let Some(buf) = self.input.as_mut() {
+                    buf.pop();
+                }
             }
-            KeyCode::Char(c) => buf.push(c),
+            KeyCode::Char(c) => {
+                if let Some(buf) = self.input.as_mut() {
+                    buf.push(c);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -145,11 +154,12 @@ mod tests {
         }
     }
 
-    /// Enter the add overlay, type `text`, and commit it.
+    /// Enter the add overlay, type `text`, commit it, and leave add mode.
     fn add(app: &mut App, text: &str) {
         press(app, KeyCode::Char('a'));
         type_text(app, text);
         press(app, KeyCode::Enter);
+        press(app, KeyCode::Esc); // exit sticky add mode
     }
 
     fn reload(path: &Path) -> App {
@@ -180,6 +190,30 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(app.tasks.is_empty());
         assert_eq!(app.mode, Mode::Empty);
+    }
+
+    #[test]
+    fn add_mode_is_sticky_until_esc() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().join("tasks.txt"), vec![]);
+
+        press(&mut app, KeyCode::Char('a'));
+        type_text(&mut app, "one");
+        press(&mut app, KeyCode::Enter);
+        // Still in add mode with a cleared buffer, ready for the next task.
+        assert_eq!(app.input.as_deref(), Some(""));
+        assert_eq!(app.tasks.len(), 1);
+
+        type_text(&mut app, "two");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.tasks.len(), 2);
+        assert_eq!(app.input.as_deref(), Some(""));
+
+        // Esc leaves add mode.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.input.is_none());
+        assert_eq!(app.tasks[0].text, "one");
+        assert_eq!(app.tasks[1].text, "two");
     }
 
     #[test]
@@ -218,6 +252,26 @@ mod tests {
         // Reloading resumes on the last dotted task (C).
         let reloaded = reload(&path);
         assert_eq!(reloaded.mode, Mode::Action { task: 2 });
+    }
+
+    #[test]
+    fn s_key_resumes_scan_from_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.txt");
+        // Three open tasks: initial scan dots A, offers B.
+        let mut app = App::new(path, vec![Task::new("A"), Task::new("B"), Task::new("C")]);
+        // Esc out of the scan to land in Action on A.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Action { task: 0 });
+        // 's' re-opens scanning below A.
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(
+            app.mode,
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
     }
 
     #[test]

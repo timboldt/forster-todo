@@ -140,6 +140,22 @@ pub fn finish_scan(mode: Mode) -> Mode {
     }
 }
 
+/// Resume scanning from an Action state: continue dotting candidates below the
+/// current last-dotted task (the action task). Stays in Action when there are no
+/// un-dotted candidates left to consider.
+pub fn resume_scan(tasks: &[Task], mode: Mode) -> Mode {
+    let Mode::Action { task } = mode else {
+        return mode;
+    };
+    match next_candidate(tasks, task) {
+        Some(c) => Mode::Preselect {
+            benchmark: task,
+            cursor: c,
+        },
+        None => mode,
+    }
+}
+
 /// Complete the action task, then determine what to do next per FVP:
 /// re-scan from the completed task's position to the end using the last
 /// remaining dotted task as benchmark; if no dots remain, start a fresh scan.
@@ -311,6 +327,32 @@ mod tests {
         let mode = complete(&mut t, mode); // finish a, no dots left -> fresh scan dots b
         assert!(t[1].is_dotted());
         assert_eq!(mode, Mode::Action { task: 1 });
+    }
+
+    #[test]
+    fn resume_scan_reopens_scanning_below_current_task() {
+        // Dot a, skip to end -> Action{0}. Resume should offer b as candidate.
+        let mut t = tasks(&["a", "b", "c"]);
+        let mode = start_scan(&mut t); // dot a, cursor=1(b)
+        let mode = finish_scan(mode); // Action{task:0}
+        assert_eq!(mode, Mode::Action { task: 0 });
+        let mode = resume_scan(&t, mode);
+        assert_eq!(
+            mode,
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+    }
+
+    #[test]
+    fn resume_scan_stays_in_action_when_no_candidates() {
+        let mut t = tasks(&["a", "b"]);
+        let mode = start_scan(&mut t); // dot a, cursor=1(b)
+        let mode = dot(&mut t, mode); // dot b -> Action{task:1}, nothing below
+        assert_eq!(mode, Mode::Action { task: 1 });
+        assert_eq!(resume_scan(&t, mode), Mode::Action { task: 1 });
     }
 
     #[test]

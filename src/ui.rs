@@ -88,10 +88,11 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Tasks "))
+        // Bright green on a dark green background, like a diff "added" line.
         .highlight_style(
             Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
+                .bg(Color::Rgb(20, 56, 30))
+                .fg(Color::Rgb(126, 231, 135))
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -111,7 +112,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(buf.as_str()),
             Span::styled("▏", Style::default().fg(Color::Cyan)),
             Span::styled(
-                "   (Enter save · Esc cancel)",
+                "   (Enter add another · Esc done)",
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -159,6 +160,8 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("   "),
             Span::styled("Space", key()),
             Span::raw(" done · "),
+            Span::styled("s", key()),
+            Span::raw(" scan · "),
             Span::styled("a", key()),
             Span::raw(" add · "),
             Span::styled("q", key()),
@@ -195,6 +198,7 @@ fn draw_help(frame: &mut Frame) {
         Line::from("  Enter / →  dot the current task"),
         Line::from("  Esc        finish the scan"),
         Line::from("  Space      mark the current task done"),
+        Line::from("  s          resume scanning (dot more tasks)"),
         Line::from("  a          add a task"),
         Line::from("  ?          toggle this help"),
         Line::from("  q          save & quit"),
