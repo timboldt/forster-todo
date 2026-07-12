@@ -86,9 +86,10 @@
       more than <b id="scan-benchmark"></b>?
     </div>
     <div class="btns">
-      <button id="dot" class="green" title="Dot it (Enter / →)">Yes — dot it</button>
+      <button id="dot" class="green" title="Dot it (→)">Yes — dot it</button>
       <button id="skip" title="Skip (↓)">No — skip</button>
       <button id="back" title="Back to the previous candidate (↑)">↑ Back</button>
+      <button id="undot" title="Undo the last dot (←)">Undo dot</button>
       <button id="finish" title="Finish the scan (Esc)">Finish scan</button>
     </div>
   </div>
@@ -110,7 +111,7 @@
 
   <footer>
     shared with the terminal · updates automatically ·
-    keys: <kbd>Enter</kbd> dot <kbd>↓</kbd> skip <kbd>↑</kbd> back
+    keys: <kbd>→</kbd> dot <kbd>←</kbd> undo <kbd>↓</kbd> skip <kbd>↑</kbd> back
     <kbd>Esc</kbd> finish <kbd>Space</kbd> complete <kbd>s</kbd> scan
   </footer>
 
@@ -194,7 +195,7 @@
     b.onclick = () => { view = b.dataset.view; if (state) render(); };
   });
 
-  for (const op of ["dot", "skip", "back", "finish", "complete", "resume", "purge"]) {
+  for (const op of ["dot", "undot", "skip", "back", "finish", "complete", "resume", "purge"]) {
     $("#" + op).onclick = () => act(op);
   }
 
@@ -214,7 +215,7 @@
     if (e.target.tagName === "INPUT" || !state) return;
     const map =
       state.mode === "preselect"
-        ? { Enter: "dot", ArrowRight: "dot", ArrowDown: "skip", ArrowUp: "back", Escape: "finish" }
+        ? { ArrowRight: "dot", ArrowLeft: "undot", ArrowDown: "skip", ArrowUp: "back", Escape: "finish" }
         : state.mode === "action"
           ? { " ": "complete", s: "resume" }
           : {};

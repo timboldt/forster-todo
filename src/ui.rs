@@ -60,19 +60,24 @@ fn draw_title(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_list(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
-    let selected = match session.mode {
-        Mode::Preselect { cursor, .. } => Some(cursor),
-        Mode::Action { task } => Some(task),
-        Mode::Empty => None,
+    let browsing = app.browse.is_some();
+    let selected = if browsing {
+        app.browse.filter(|_| !session.tasks.is_empty())
+    } else {
+        match session.mode {
+            Mode::Preselect { cursor, .. } => Some(cursor),
+            Mode::Action { task } => Some(task),
+            Mode::Empty => None,
+        }
     };
     let benchmark = match session.mode {
-        Mode::Preselect { benchmark, .. } => Some(benchmark),
+        Mode::Preselect { benchmark, .. } if !browsing => Some(benchmark),
         _ => None,
     };
 
-    // While adding tasks, show the whole list for context rather than the
-    // (possibly narrow) filtered view of the underlying mode.
-    let filter_mode = if app.input.is_some() {
+    // Browse mode and the add/edit overlay show the whole list for context
+    // rather than the (possibly narrow) filtered view of the underlying mode.
+    let filter_mode = if app.input.is_some() || browsing {
         Mode::Empty
     } else {
         session.mode
@@ -135,16 +140,39 @@ fn draw_list(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
 fn draw_status(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
     let block = Block::default().borders(Borders::ALL);
 
-    // Adding a task takes over the status bar as an input line.
+    // The input overlay (add or edit) takes over the status bar.
     if let Some(buf) = &app.input {
+        let (title, hint) = if app.input_target.is_some() {
+            ("Edit task: ", "   (Enter save · Esc cancel)")
+        } else {
+            ("New task: ", "   (Enter add another · Esc done)")
+        };
         let line = Line::from(vec![
-            Span::styled("New task: ", Style::default().fg(Color::Cyan)),
+            Span::styled(title, Style::default().fg(Color::Cyan)),
             Span::raw(buf.as_str()),
             Span::styled("▏", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                "   (Enter add another · Esc done)",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(hint, Style::default().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(line).block(block), area);
+        return;
+    }
+
+    // Browse mode has its own bar regardless of the underlying FVP mode.
+    if app.browse.is_some() {
+        let line = Line::from(vec![
+            Span::styled("Browse  ", Style::default().fg(Color::Cyan)),
+            Span::styled("↑/↓", key()),
+            Span::raw(" move · "),
+            Span::styled("Space", key()),
+            Span::raw(" done/undone · "),
+            Span::styled(".", key()),
+            Span::raw(" dot · "),
+            Span::styled("Enter", key()),
+            Span::raw(" edit · "),
+            Span::styled("Esc", key()),
+            Span::raw(" back · "),
+            Span::styled("s", key()),
+            Span::raw(" scan"),
         ]);
         frame.render_widget(Paragraph::new(line).block(block), area);
         return;
@@ -155,27 +183,42 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
             Span::styled("No active tasks. ", Style::default().fg(Color::Green)),
             Span::styled("a", key()),
             Span::raw(" add · "),
+            Span::styled("Esc", key()),
+            Span::raw(" browse · "),
             Span::styled("q", key()),
             Span::raw(" quit"),
         ]),
-        Mode::Preselect { benchmark, .. } => Line::from(vec![
-            Span::styled("Do more than ", Style::default().fg(Color::White)),
-            Span::styled(
-                format!("«{}»", session.tasks[benchmark].text),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("?  "),
-            Span::styled("↑/↓", key()),
-            Span::raw(" move · "),
-            Span::styled("Enter/→", key()),
-            Span::raw(" dot · "),
-            Span::styled("Esc", key()),
-            Span::raw(" finish · "),
-            Span::styled("a", key()),
-            Span::raw(" add"),
-        ]),
+        Mode::Preselect { benchmark, cursor } => {
+            let mut spans = vec![
+                Span::styled("Do more than ", Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("«{}»", session.tasks[benchmark].text),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("?  "),
+                Span::styled("↑/↓", key()),
+                Span::raw(" move · "),
+                Span::styled("→", key()),
+                Span::raw(" dot · "),
+                Span::styled("←", key()),
+                Span::raw(" undo dot · "),
+                Span::styled("Esc", key()),
+                Span::raw(" finish · "),
+                Span::styled("a", key()),
+                Span::raw(" add"),
+            ];
+            // At the last candidate, remind that the scan ends explicitly.
+            let at_end = !session.tasks.iter().skip(cursor + 1).any(|t| t.is_open());
+            if at_end {
+                spans.push(Span::styled(
+                    "  · end of list — Esc finishes",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            Line::from(spans)
+        }
         Mode::Action { task } => Line::from(vec![
             Span::styled(
                 "▶ DO NOW: ",
@@ -192,6 +235,8 @@ fn draw_status(frame: &mut Frame, area: Rect, session: &Session, app: &App) {
             Span::raw(" done · "),
             Span::styled("s", key()),
             Span::raw(" scan · "),
+            Span::styled("Esc", key()),
+            Span::raw(" browse · "),
             Span::styled("a", key()),
             Span::raw(" add · "),
             Span::styled("q", key()),
@@ -209,7 +254,7 @@ fn key() -> Style {
 }
 
 fn draw_help(frame: &mut Frame) {
-    let area = centered_rect(60, 60, frame.area());
+    let area = centered_rect(70, 90, frame.area());
     let text = vec![
         Line::from(Span::styled(
             "FVP — Final Version Perfected",
@@ -220,19 +265,40 @@ fn draw_help(frame: &mut Frame) {
         Line::from("do it MORE than the underlined benchmark?"),
         Line::from("The last dotted task is always done next."),
         Line::from(""),
+        Line::from("Esc zooms out: Scan → Do → Browse. s dives back in."),
+        Line::from(""),
         Line::from(vec![Span::styled(
-            "Keys:",
+            "Scan (pre-select):",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  ↑/↓        move between candidates"),
-        Line::from("  Enter / →  dot the current task"),
-        Line::from("  Esc        finish the scan"),
-        Line::from("  Space      mark the current task done"),
+        Line::from("  ↑/↓        move between candidates (bounded)"),
+        Line::from("  →          dot the current task"),
+        Line::from("  ←          undo the last dot"),
+        Line::from("  Esc        finish the scan → Do"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Do (action):",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  Space      mark the DO NOW task done"),
         Line::from("  s          resume scanning (dot more tasks)"),
-        Line::from("  a          add a task"),
-        Line::from("  p          purge done tasks (backs up file first)"),
-        Line::from("  ?          toggle this help"),
-        Line::from("  q          save & quit"),
+        Line::from("  Esc        browse the full list"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Browse:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  ↑/↓        move over all tasks (incl. done)"),
+        Line::from("  Space      toggle done/undone"),
+        Line::from("  .          toggle the dot"),
+        Line::from("  Enter / e  edit the task text"),
+        Line::from("  Esc        back to Do · s resume scanning"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Anywhere:",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  a add · p purge done (backs up first) · ? help · q quit"),
         Line::from(""),
         Line::from(Span::styled(
             "Press ? or Esc to close",

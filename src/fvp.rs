@@ -101,8 +101,27 @@ pub fn dot(tasks: &mut [Task], mode: Mode) -> Mode {
     }
 }
 
-/// Move the cursor down to the next candidate. Past the last candidate the scan
-/// completes and the last dotted task becomes the action task.
+/// Undo the most recent dot: un-dot the benchmark, restore the previous dotted
+/// task as the benchmark, and put the cursor on the just-undotted task so the
+/// question can be re-answered. No-op when the benchmark is the only dot — a
+/// scan always has a benchmark.
+pub fn undot(tasks: &mut [Task], mode: Mode) -> Mode {
+    let Mode::Preselect { benchmark, .. } = mode else {
+        return mode;
+    };
+    let Some(prev) = tasks[..benchmark].iter().rposition(Task::is_dotted) else {
+        return mode;
+    };
+    tasks[benchmark].status = Status::Open;
+    Mode::Preselect {
+        benchmark: prev,
+        cursor: benchmark,
+    }
+}
+
+/// Move the cursor down to the next candidate. Bounded like [`move_up`]: at the
+/// last candidate this is a no-op — the scan ends only explicitly (via
+/// [`finish_scan`]) or by dotting the last candidate.
 pub fn move_down(tasks: &[Task], mode: Mode) -> Mode {
     let Mode::Preselect { benchmark, cursor } = mode else {
         return mode;
@@ -112,7 +131,7 @@ pub fn move_down(tasks: &[Task], mode: Mode) -> Mode {
             benchmark,
             cursor: c,
         },
-        None => Mode::Action { task: benchmark },
+        None => mode,
     }
 }
 
@@ -231,12 +250,61 @@ mod tests {
     }
 
     #[test]
-    fn scanning_to_end_enters_action_on_last_dotted() {
+    fn undot_restores_previous_benchmark_and_reoffers_the_task() {
+        let mut t = tasks(&["a", "b", "c", "d"]);
+        let mode = start_scan(&mut t); // dot a, cursor=1(b)
+        let mode = move_down(&t, mode); // cursor=2(c)
+        let mode = dot(&mut t, mode); // dot c -> benchmark=2, cursor=3(d)
+        let mode = undot(&mut t, mode); // change of mind: un-dot c
+        assert!(t[2].is_open());
+        // Benchmark is a again and c is the candidate under the cursor.
+        assert_eq!(
+            mode,
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 2
+            }
+        );
+        // b (skipped earlier) is back in the running via up-navigation.
+        assert_eq!(
+            move_up(&t, mode),
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+    }
+
+    #[test]
+    fn undot_is_a_noop_on_the_only_dot() {
+        let mut t = tasks(&["a", "b"]);
+        let mode = start_scan(&mut t); // dot a (the only dot), cursor=1
+        let mode = undot(&mut t, mode);
+        assert!(t[0].is_dotted());
+        assert_eq!(
+            mode,
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+    }
+
+    #[test]
+    fn move_down_is_bounded_at_last_candidate() {
         let mut t = tasks(&["a", "b", "c"]);
         let mode = start_scan(&mut t); // dot a, cursor=1
-        let mode = dot(&mut t, mode); // dot b, cursor=2
-        let mode = move_down(&t, mode); // past c (skip) -> end
-        assert_eq!(mode, Mode::Action { task: 1 }); // last dotted is b
+        let mode = dot(&mut t, mode); // dot b, cursor=2 (last candidate)
+        let mode = move_down(&t, mode); // no next candidate -> stay put
+        assert_eq!(
+            mode,
+            Mode::Preselect {
+                benchmark: 1,
+                cursor: 2
+            }
+        );
+        // The scan ends only explicitly.
+        assert_eq!(finish_scan(mode), Mode::Action { task: 1 });
     }
 
     #[test]
@@ -281,7 +349,7 @@ mod tests {
         let mode = start_scan(&mut t); // dot a, cursor=1(b)
         let mode = move_down(&t, mode); // cursor=2(c)
         let mode = dot(&mut t, mode); // dot c -> benchmark=2, cursor=3(d)
-        let mode = move_down(&t, mode); // past d -> Action{task:2}
+        let mode = finish_scan(mode); // skip d, end scan -> Action{task:2}
         assert_eq!(mode, Mode::Action { task: 2 });
         let mode = complete(&mut t, mode); // finish c
         assert_eq!(t[2].status, Status::Done);
@@ -322,7 +390,7 @@ mod tests {
     fn completing_only_dot_starts_fresh_scan() {
         let mut t = tasks(&["a", "b"]);
         let mode = start_scan(&mut t); // dot a, cursor=1
-        let mode = move_down(&t, mode); // skip b -> Action{task:0}
+        let mode = finish_scan(mode); // skip b, end scan -> Action{task:0}
         assert_eq!(mode, Mode::Action { task: 0 });
         let mode = complete(&mut t, mode); // finish a, no dots left -> fresh scan dots b
         assert!(t[1].is_dotted());

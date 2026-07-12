@@ -6,7 +6,7 @@
 //! - `GET  /api/tasks` snapshot: `{version, mode, current, benchmark, cursor, tasks}`
 //! - `POST /api/add`   body = task text; appends an open task
 //! - `POST /api/act?op=<op>&version=N` applies an FVP operation:
-//!   `dot`/`skip`/`back`/`finish` during a scan, `complete`/`resume` in action
+//!   `dot`/`undot`/`skip`/`back`/`finish` during a scan, `complete`/`resume` in action
 //!   mode, `purge` (backup + drop done tasks) in any mode. The version guard
 //!   (409 on mismatch) prevents acting on a stale view, and ops outside their
 //!   mode return 409.
@@ -150,12 +150,13 @@ fn handle(mut request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
             }
             let scanning = matches!(session.mode, Mode::Preselect { .. });
             let result = match op.as_str() {
-                "dot" | "skip" | "back" | "finish" => {
+                "dot" | "undot" | "skip" | "back" | "finish" => {
                     if !scanning {
                         return respond_json(request, 409, r#"{"error":"not scanning"}"#);
                     }
                     match op.as_str() {
                         "dot" => session.dot(),
+                        "undot" => session.undot(),
                         "skip" => {
                             session.move_down();
                             Ok(())

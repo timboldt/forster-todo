@@ -60,8 +60,8 @@ The web view has the full functionality of the TUI:
 - **Act** — the DO NOW banner has **Complete** and **Scan** (resume) buttons.
 - **Add a task** — appends an open task, exactly like `a` in the TUI.
 - **Purge done** — backs up the task file, then removes finished tasks.
-- The TUI keyboard shortcuts work on the page too (`Enter`/`→` dot, `↓` skip,
-  `↑` back, `Esc` finish, `Space` complete, `s` scan).
+- The TUI keyboard shortcuts work on the page too (`→` dot, `←` undo dot,
+  `↓` skip, `↑` back, `Esc` finish, `Space` complete, `s` scan).
 
 Every action carries a version guard, so a stale browser tab can never act on
 the wrong task — it just resyncs.
@@ -73,17 +73,49 @@ in the terminal immediately, and vice versa.
 
 ## Keys
 
-| Key | Mode | Action |
-| --- | --- | --- |
-| `↑` / `↓` | Scan | Move between candidates |
-| `Enter` / `→` | Scan | Dot the current task (it becomes the benchmark) |
-| `Esc` | Scan | Finish scanning and act on the last dotted task |
-| `Space` | Action | Mark the current task done |
-| `s` | Action | Resume scanning to dot more tasks |
-| `a` | Any | Add tasks (sticky: `Enter` adds another, `Esc` exits) |
-| `p` | Any | Purge done tasks (backs up the file first) |
-| `?` | Any | Toggle help |
-| `q` | Any | Save & quit |
+The TUI has three levels, and **`Esc` always zooms out one level**:
+**Scan** (pre-selection) → **Do** (work the DO NOW task) → **Browse** (the whole
+list, free cursor). `s` dives back into scanning from either outer level.
+
+**Scan** — answering "do I want to do this more than the benchmark?"
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Move between candidates (bounded — no accidental exits) |
+| `→` | Dot the current task (it becomes the benchmark) |
+| `←` | Undo the last dot (change your mind mid-scan) |
+| `Esc` | Finish the scan → Do |
+
+**Do** — the last dotted task is highlighted as DO NOW:
+
+| Key | Action |
+| --- | --- |
+| `Space` | Mark the DO NOW task done (drops back to the previous dot) |
+| `s` | Resume scanning below the current task |
+| `Esc` | Browse the full list |
+
+**Browse** — every task visible (including done), free cursor:
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Move over all tasks |
+| `Space` | Toggle done/undone on any task |
+| `.` | Toggle the dot on any task (manual pre-selection) |
+| `Enter` / `e` | Edit the task's text |
+| `Esc` | Back to Do |
+| `s` | Resume scanning |
+
+**Anywhere:**
+
+| Key | Action |
+| --- | --- |
+| `a` | Add tasks (sticky: `Enter` adds another, `Esc` exits) |
+| `p` | Purge done tasks (backs up the file first) |
+| `?` | Toggle help |
+| `q` | Save & quit |
+
+Note: status changes made in Browse re-derive the FVP state from the dots (the
+same rule as restarting the app), so a scan in progress is abandoned by them.
 
 ## Storage format
 

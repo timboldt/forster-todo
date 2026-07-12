@@ -9,7 +9,7 @@ use anyhow::Result;
 
 use crate::fvp::{self, Mode};
 use crate::storage;
-use crate::task::Task;
+use crate::task::{Status, Task};
 
 pub struct Session {
     pub tasks: Vec<Task>,
@@ -82,6 +82,13 @@ impl Session {
         self.save()
     }
 
+    /// Undo the most recent dot during a scan (no-op on the only dot).
+    pub fn undot(&mut self) -> Result<()> {
+        self.mode = fvp::undot(&mut self.tasks, self.mode);
+        self.bump();
+        self.save()
+    }
+
     /// Complete the action ("DO NOW") task. Stays in Action mode on the next
     /// dotted task when one remains. No-op unless in Action mode.
     pub fn complete(&mut self) -> Result<()> {
@@ -98,6 +105,57 @@ impl Session {
         }
         self.bump();
         self.save()
+    }
+
+    // --- Direct manipulation (browse mode) ---
+    //
+    // These act on an arbitrary index. Status changes abandon any scan in
+    // progress and re-derive the mode from the dots ("the dots define the
+    // state" — the same rule as an app restart).
+
+    /// Toggle done/undone on the task at `i`: done -> open, open/dotted -> done.
+    pub fn toggle_done_at(&mut self, i: usize) -> Result<()> {
+        let Some(task) = self.tasks.get_mut(i) else {
+            return Ok(());
+        };
+        task.status = match task.status {
+            Status::Done => Status::Open,
+            Status::Open | Status::Dotted => Status::Done,
+        };
+        self.rederive_mode();
+        self.bump();
+        self.save()
+    }
+
+    /// Toggle the dot on the task at `i`: open <-> dotted. No-op on done tasks.
+    pub fn toggle_dot_at(&mut self, i: usize) -> Result<()> {
+        let Some(task) = self.tasks.get_mut(i) else {
+            return Ok(());
+        };
+        task.status = match task.status {
+            Status::Open => Status::Dotted,
+            Status::Dotted => Status::Open,
+            Status::Done => return Ok(()),
+        };
+        self.rederive_mode();
+        self.bump();
+        self.save()
+    }
+
+    /// Replace the text of the task at `i`. Status and mode are unaffected.
+    pub fn edit_text_at(&mut self, i: usize, text: impl Into<String>) -> Result<()> {
+        let Some(task) = self.tasks.get_mut(i) else {
+            return Ok(());
+        };
+        task.text = text.into();
+        self.bump();
+        self.save()
+    }
+
+    /// Re-derive the mode from the dots (Action on the last dotted task, else a
+    /// fresh scan, else Empty) after a direct status change.
+    fn rederive_mode(&mut self) {
+        self.mode = fvp::initial_mode(&mut self.tasks);
     }
 
     /// Back up the task file to a dated copy, then remove all done tasks.
@@ -179,6 +237,76 @@ mod tests {
         s.complete().unwrap();
         assert_eq!(s.mode, before);
         assert!(s.tasks.iter().all(|t| t.is_active()));
+    }
+
+    #[test]
+    fn toggle_done_completes_arbitrary_task_and_rederives_mode() {
+        let (_dir, mut s) = session(&["a", "b", "c"]);
+        // Initial scan dots a: Preselect { benchmark: 0, cursor: 1 }.
+        // Complete b (not the action task, mid-scan) directly.
+        s.toggle_done_at(1).unwrap();
+        assert_eq!(s.tasks[1].status, Status::Done);
+        // Scan abandoned; mode re-derived from dots: Action on a.
+        assert_eq!(s.mode, Mode::Action { task: 0 });
+
+        // Un-complete it: b back to open; dots unchanged -> still Action on a.
+        s.toggle_done_at(1).unwrap();
+        assert_eq!(s.tasks[1].status, Status::Open);
+        assert_eq!(s.mode, Mode::Action { task: 0 });
+    }
+
+    #[test]
+    fn toggle_done_on_last_dot_starts_fresh_scan() {
+        let (_dir, mut s) = session(&["a", "b"]);
+        // a is dotted (initial scan). Complete a directly.
+        s.toggle_done_at(0).unwrap();
+        // No dots left -> fresh scan dots b (only active task) -> Action.
+        assert!(s.tasks[1].is_dotted());
+        assert_eq!(s.mode, Mode::Action { task: 1 });
+    }
+
+    #[test]
+    fn toggle_dot_flips_open_and_dotted_but_not_done() {
+        let (_dir, mut s) = session(&["a", "b", "c"]);
+        // Dot b manually -> it becomes the last dotted -> Action on b.
+        s.toggle_dot_at(1).unwrap();
+        assert!(s.tasks[1].is_dotted());
+        assert_eq!(s.mode, Mode::Action { task: 1 });
+        // Un-dot b -> a is the only dot again.
+        s.toggle_dot_at(1).unwrap();
+        assert!(s.tasks[1].is_open());
+        assert_eq!(s.mode, Mode::Action { task: 0 });
+
+        // Done tasks are untouched by dot toggling.
+        s.toggle_done_at(2).unwrap();
+        let v = s.version();
+        s.toggle_dot_at(2).unwrap();
+        assert_eq!(s.tasks[2].status, Status::Done);
+        assert_eq!(s.version(), v); // true no-op
+    }
+
+    #[test]
+    fn edit_text_preserves_status_and_persists() {
+        let (dir, mut s) = session(&["old text", "b"]);
+        // a is dotted from the initial scan.
+        let mode_before = s.mode;
+        s.edit_text_at(0, "new text").unwrap();
+        assert_eq!(s.tasks[0].text, "new text");
+        assert!(s.tasks[0].is_dotted());
+        assert_eq!(s.mode, mode_before);
+        let live = std::fs::read_to_string(dir.path().join("tasks.txt")).unwrap();
+        assert!(live.contains("[.] new text"));
+    }
+
+    #[test]
+    fn direct_ops_out_of_range_are_noops() {
+        let (_dir, mut s) = session(&["a"]);
+        let v = s.version();
+        s.toggle_done_at(9).unwrap();
+        s.toggle_dot_at(9).unwrap();
+        s.edit_text_at(9, "x").unwrap();
+        assert_eq!(s.version(), v);
+        assert_eq!(s.tasks.len(), 1);
     }
 
     #[test]

@@ -12,8 +12,12 @@ use crate::session::Session;
 
 pub struct App {
     pub session: Arc<Mutex<Session>>,
-    /// `Some` while the user is typing a new task in the add overlay.
+    /// `Some` while the user is typing in the input overlay (add or edit).
     pub input: Option<String>,
+    /// `Some(i)` while the input overlay is editing task `i`; `None` = adding.
+    pub input_target: Option<usize>,
+    /// `Some(cursor)` while browse mode is active (free cursor over all tasks).
+    pub browse: Option<usize>,
     pub show_help: bool,
     pub should_quit: bool,
 }
@@ -23,6 +27,8 @@ impl App {
         App {
             session,
             input: None,
+            input_target: None,
+            browse: None,
             show_help: false,
             should_quit: false,
         }
@@ -59,12 +65,73 @@ impl App {
                 self.should_quit = true;
             }
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('a') | KeyCode::Char('A') => self.input = Some(String::new()),
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.input = Some(String::new());
+                self.input_target = None;
+            }
             // Back up the file, then drop done tasks from the list.
             KeyCode::Char('p') => {
                 self.session().purge_done()?;
+                self.clamp_browse_cursor();
             }
+            _ if self.browse.is_some() => self.on_browse_key(key)?,
             _ => self.on_mode_key(key)?,
+        }
+        Ok(())
+    }
+
+    /// Enter browse mode with the cursor on the action task (or the top).
+    fn enter_browse(&mut self) {
+        let session = self.session();
+        let len = session.tasks.len();
+        let cursor = session
+            .action_task()
+            .unwrap_or(0)
+            .min(len.saturating_sub(1));
+        drop(session);
+        self.browse = Some(cursor);
+    }
+
+    /// Keep the browse cursor in bounds after the list shrinks (e.g. purge).
+    fn clamp_browse_cursor(&mut self) {
+        if let Some(cursor) = self.browse {
+            let len = self.session().tasks.len();
+            self.browse = Some(cursor.min(len.saturating_sub(1)));
+        }
+    }
+
+    /// Keys while browsing the full list with a free cursor.
+    fn on_browse_key(&mut self, key: KeyEvent) -> Result<()> {
+        let Some(cursor) = self.browse else {
+            return Ok(());
+        };
+        let mut session = self.session.lock().expect("session lock poisoned");
+        let len = session.tasks.len();
+        match key.code {
+            KeyCode::Up => {
+                self.browse = Some(cursor.saturating_sub(1));
+            }
+            KeyCode::Down => {
+                if cursor + 1 < len {
+                    self.browse = Some(cursor + 1);
+                }
+            }
+            KeyCode::Char(' ') => session.toggle_done_at(cursor)?,
+            KeyCode::Char('.') => session.toggle_dot_at(cursor)?,
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if let Some(task) = session.tasks.get(cursor) {
+                    self.input = Some(task.text.clone());
+                    self.input_target = Some(cursor);
+                }
+            }
+            // Back out to Do (action) mode.
+            KeyCode::Esc => self.browse = None,
+            // Dive back into scanning.
+            KeyCode::Char('s') => {
+                self.browse = None;
+                session.resume_scan();
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -76,7 +143,8 @@ impl App {
             Mode::Preselect { .. } => match key.code {
                 KeyCode::Up => session.move_up(),
                 KeyCode::Down => session.move_down(),
-                KeyCode::Enter | KeyCode::Right => session.dot()?,
+                KeyCode::Right => session.dot()?,
+                KeyCode::Left => session.undot()?,
                 KeyCode::Esc => session.finish_scan(),
                 _ => {}
             },
@@ -84,21 +152,42 @@ impl App {
                 KeyCode::Char(' ') => session.complete()?,
                 // Resume scanning to dot more candidates below the current task.
                 KeyCode::Char('s') => session.resume_scan(),
+                // Zoom out to browse the full list.
+                KeyCode::Esc => {
+                    drop(session);
+                    self.enter_browse();
+                }
                 _ => {}
             },
-            Mode::Empty => {}
+            Mode::Empty => {
+                if key.code == KeyCode::Esc {
+                    drop(session);
+                    self.enter_browse();
+                }
+            }
         }
         Ok(())
     }
 
-    /// Keys while the add-task input overlay is open. Add mode is "sticky":
-    /// Enter commits the current entry and clears the buffer for the next one;
-    /// Esc leaves add mode and returns to the previous mode.
+    /// Keys while the input overlay is open. Adding is "sticky": Enter commits
+    /// the entry and clears the buffer for the next one; Esc leaves. Editing
+    /// (`input_target` set) saves on Enter and closes immediately.
     fn on_input_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Esc => self.input = None,
+            KeyCode::Esc => {
+                self.input = None;
+                self.input_target = None;
+            }
             KeyCode::Enter => {
                 let text = self.input.as_deref().unwrap_or_default().trim().to_string();
+                if let Some(i) = self.input_target.take() {
+                    self.input = None;
+                    // An emptied buffer cancels rather than blanking the task.
+                    if !text.is_empty() {
+                        self.session().edit_text_at(i, text)?;
+                    }
+                    return Ok(());
+                }
                 if !text.is_empty() {
                     self.session().add(text)?;
                 }
@@ -230,7 +319,7 @@ mod tests {
         );
 
         // Dot C -> it becomes the last dotted and the action task.
-        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Right);
         assert_eq!(mode(&app), Mode::Action { task: 2 });
         assert!(app.session().tasks[2].is_dotted());
 
@@ -265,6 +354,185 @@ mod tests {
                 cursor: 1
             }
         );
+    }
+
+    #[test]
+    fn esc_zooms_out_scan_to_do_to_browse_and_back_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(
+            dir.path(),
+            vec![Task::new("A"), Task::new("B"), Task::new("C")],
+        );
+        // Scan in progress.
+        assert!(matches!(mode(&app), Mode::Preselect { .. }));
+        // Esc: Scan -> Do.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
+        assert!(app.browse.is_none());
+        // Esc: Do -> Browse, cursor on the action task.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.browse, Some(0));
+        // Esc: Browse -> Do.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.browse.is_none());
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
+    }
+
+    #[test]
+    fn left_undoes_the_last_dot_during_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        // Initial scan dots A: Preselect { benchmark: 0, cursor: 1 }.
+        let mut app = app_with(
+            dir.path(),
+            vec![Task::new("A"), Task::new("B"), Task::new("C")],
+        );
+        press(&mut app, KeyCode::Right); // dot B -> benchmark 1, cursor 2
+        assert!(app.session().tasks[1].is_dotted());
+        press(&mut app, KeyCode::Left); // change of mind: un-dot B
+        assert!(app.session().tasks[1].is_open());
+        assert_eq!(
+            mode(&app),
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+        // The undo persisted.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("tasks.txt")).unwrap(),
+            "[.] A\n[ ] B\n[ ] C\n"
+        );
+        // The first (automatic) dot can't be undone.
+        press(&mut app, KeyCode::Left);
+        assert!(app.session().tasks[0].is_dotted());
+    }
+
+    #[test]
+    fn enter_no_longer_dots_during_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("A"), Task::new("B")]);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.session().tasks[1].is_open());
+        assert_eq!(
+            mode(&app),
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+    }
+
+    #[test]
+    fn enter_in_browse_opens_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("A"), Task::new("B")]);
+        press(&mut app, KeyCode::Esc); // -> Do
+        press(&mut app, KeyCode::Esc); // -> Browse at 0
+        press(&mut app, KeyCode::Enter); // Enter edits, same as `e`
+        assert_eq!(app.input.as_deref(), Some("A"));
+        assert_eq!(app.input_target, Some(0));
+        // Still in browse behind the overlay; Esc cancels the edit only.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.input.is_none());
+        assert_eq!(app.browse, Some(0));
+    }
+
+    #[test]
+    fn browse_navigates_and_toggles_done_and_dot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(
+            dir.path(),
+            vec![Task::new("A"), Task::new("B"), Task::new("C")],
+        );
+        press(&mut app, KeyCode::Esc); // -> Do
+        press(&mut app, KeyCode::Esc); // -> Browse at 0
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.browse, Some(2));
+        press(&mut app, KeyCode::Down); // bounded
+        assert_eq!(app.browse, Some(2));
+
+        // Complete C directly (not the action task).
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.session().tasks[2].is_active());
+        // Un-complete it.
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.session().tasks[2].is_open());
+
+        // Manually dot B: it becomes the last dotted -> action task.
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char('.'));
+        assert!(app.session().tasks[1].is_dotted());
+        assert_eq!(mode(&app), Mode::Action { task: 1 });
+        // Still browsing (mode change doesn't kick us out).
+        assert_eq!(app.browse, Some(1));
+    }
+
+    #[test]
+    fn browse_edit_prefills_saves_and_is_not_sticky() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("old"), Task::new("B")]);
+        press(&mut app, KeyCode::Esc); // -> Do
+        press(&mut app, KeyCode::Esc); // -> Browse at 0
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.input.as_deref(), Some("old"));
+        assert_eq!(app.input_target, Some(0));
+
+        // Append " text" and save.
+        type_text(&mut app, " text");
+        press(&mut app, KeyCode::Enter);
+        // Overlay closed (not sticky), still browsing, text saved, status kept.
+        assert!(app.input.is_none());
+        assert!(app.input_target.is_none());
+        assert_eq!(app.browse, Some(0));
+        assert_eq!(app.session().tasks[0].text, "old text");
+        assert!(app.session().tasks[0].is_dotted());
+    }
+
+    #[test]
+    fn s_from_browse_resumes_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("A"), Task::new("B")]);
+        press(&mut app, KeyCode::Esc); // -> Do (Action on A)
+        press(&mut app, KeyCode::Esc); // -> Browse
+        press(&mut app, KeyCode::Char('s'));
+        assert!(app.browse.is_none());
+        assert_eq!(
+            mode(&app),
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+    }
+
+    #[test]
+    fn down_is_bounded_during_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("A"), Task::new("B")]);
+        // Preselect { benchmark: 0, cursor: 1 } — B is the last candidate.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            mode(&app),
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+    }
+
+    #[test]
+    fn esc_from_empty_mode_enters_browse_over_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("only")]);
+        press(&mut app, KeyCode::Char(' ')); // complete the only task -> Empty
+        assert_eq!(mode(&app), Mode::Empty);
+        press(&mut app, KeyCode::Esc); // -> Browse over the done history
+        assert_eq!(app.browse, Some(0));
+        // Un-complete it from browse; mode re-derives to a fresh scan.
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.session().tasks[0].is_dotted());
+        assert_eq!(mode(&app), Mode::Action { task: 0 });
     }
 
     #[test]
