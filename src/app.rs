@@ -60,6 +60,10 @@ impl App {
             }
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('a') | KeyCode::Char('A') => self.input = Some(String::new()),
+            // Back up the file, then drop done tasks from the list.
+            KeyCode::Char('p') => {
+                self.session().purge_done()?;
+            }
             _ => self.on_mode_key(key)?,
         }
         Ok(())
@@ -260,6 +264,34 @@ mod tests {
                 benchmark: 0,
                 cursor: 1
             }
+        );
+    }
+
+    #[test]
+    fn p_key_purges_done_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with(dir.path(), vec![Task::new("A"), Task::new("B")]);
+        // Finish the scan on A and complete it (B remains, freshly dotted).
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.session().tasks.len(), 2);
+
+        press(&mut app, KeyCode::Char('p'));
+        let session = app.session();
+        assert_eq!(session.tasks.len(), 1);
+        assert_eq!(session.tasks[0].text, "B");
+        assert_eq!(session.mode, Mode::Action { task: 0 });
+        drop(session);
+        // Backup captured the pre-purge state.
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().starts_with("tasks.txt-"))
+            .expect("backup created");
+        assert!(
+            std::fs::read_to_string(backup.path())
+                .unwrap()
+                .contains("[x] A")
         );
     }
 

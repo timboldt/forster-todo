@@ -47,6 +47,8 @@
   .tabs { display: flex; gap: .5rem; margin-bottom: .8rem; }
   .tabs button { font-weight: 400; background: #161b22; border: 1px solid #30363d; }
   .tabs button.active { background: #14381e; color: #7ee787; border-color: #238636; }
+  #purge { margin-left: auto; color: #8b949e; }
+  #purge:hover { color: #e6edf3; }
   ul { list-style: none; padding: 0; margin: 0; }
   li {
     display: flex; gap: .55rem; padding: .45rem .6rem;
@@ -100,6 +102,7 @@
     <button data-view="selected">Selected</button>
     <button data-view="unfinished">Unfinished</button>
     <button data-view="all">All</button>
+    <button id="purge" title="Back up the task file, then remove done tasks">Purge done</button>
   </div>
 
   <ul id="list"></ul>
@@ -191,7 +194,7 @@
     b.onclick = () => { view = b.dataset.view; if (state) render(); };
   });
 
-  for (const op of ["dot", "skip", "back", "finish", "complete", "resume"]) {
+  for (const op of ["dot", "skip", "back", "finish", "complete", "resume", "purge"]) {
     $("#" + op).onclick = () => act(op);
   }
 

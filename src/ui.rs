@@ -230,6 +230,7 @@ fn draw_help(frame: &mut Frame) {
         Line::from("  Space      mark the current task done"),
         Line::from("  s          resume scanning (dot more tasks)"),
         Line::from("  a          add a task"),
+        Line::from("  p          purge done tasks (backs up file first)"),
         Line::from("  ?          toggle this help"),
         Line::from("  q          save & quit"),
         Line::from(""),

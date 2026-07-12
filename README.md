@@ -59,6 +59,7 @@ The web view has the full functionality of the TUI:
   to do X more than Y?") with **Yes / No / Back / Finish** buttons.
 - **Act** — the DO NOW banner has **Complete** and **Scan** (resume) buttons.
 - **Add a task** — appends an open task, exactly like `a` in the TUI.
+- **Purge done** — backs up the task file, then removes finished tasks.
 - The TUI keyboard shortcuts work on the page too (`Enter`/`→` dot, `↓` skip,
   `↑` back, `Esc` finish, `Space` complete, `s` scan).
 
@@ -80,6 +81,7 @@ in the terminal immediately, and vice versa.
 | `Space` | Action | Mark the current task done |
 | `s` | Action | Resume scanning to dot more tasks |
 | `a` | Any | Add tasks (sticky: `Enter` adds another, `Esc` exits) |
+| `p` | Any | Purge done tasks (backs up the file first) |
 | `?` | Any | Toggle help |
 | `q` | Any | Save & quit |
 
@@ -98,7 +100,11 @@ Pick up dry cleaning           # a bare line is treated as a new open task
 - Blank lines are ignored.
 - Any line that doesn't start with a known marker is treated as a new open task — so you can add tasks just by typing them. They're normalized to `[ ] ...` on the next save.
 
-Completed tasks are kept in the file as history and filtered out of the active list.
+Completed tasks are kept in the file as history and filtered out of the active
+list. When the history builds up, **purge** (`p` in the TUI, "Purge done" on the
+web) first copies the file to a dated backup next to it — `tasks.txt-20260712`,
+with `-2`, `-3`, … suffixes if you purge more than once a day — and then removes
+the `[x]` lines from the live file. Nothing is ever deleted without a backup.
 
 ## Development
 

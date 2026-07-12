@@ -16,7 +16,7 @@
 //! explicit prefix, normalizing implied lines to `[ ] ...`.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -75,6 +75,30 @@ pub fn load(path: &Path) -> Result<Vec<Task>> {
     }
 }
 
+/// Copy the task file to a dated sibling (`tasks.txt-20260712`) and return the
+/// backup's path. Same-day collisions get a numeric suffix (`-2`, `-3`, …) so
+/// earlier backups are never overwritten.
+pub fn backup(path: &Path) -> Result<PathBuf> {
+    let stamp = chrono::Local::now().format("%Y%m%d").to_string();
+    backup_as(path, &stamp)
+}
+
+fn backup_as(path: &Path, stamp: &str) -> Result<PathBuf> {
+    let mut base = path.as_os_str().to_os_string();
+    base.push(format!("-{stamp}"));
+    let mut candidate = PathBuf::from(&base);
+    let mut n = 1;
+    while candidate.exists() {
+        n += 1;
+        let mut next = base.clone();
+        next.push(format!("-{n}"));
+        candidate = PathBuf::from(next);
+    }
+    fs::copy(path, &candidate)
+        .with_context(|| format!("backing up {} to {}", path.display(), candidate.display()))?;
+    Ok(candidate)
+}
+
 /// Save tasks to `path`, creating parent directories as needed.
 pub fn save(path: &Path, tasks: &[Task]) -> Result<()> {
     if let Some(dir) = path.parent()
@@ -126,6 +150,27 @@ Pick up dry cleaning
         let twice = serialize(&parse(&once));
         assert_eq!(once, twice);
         assert_eq!(once, "[x] a\n[.] b\n[ ] c\n[ ] freeform d\n");
+    }
+
+    #[test]
+    fn backup_copies_and_numbers_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.txt");
+        fs::write(&path, "[x] a\n").unwrap();
+
+        let b1 = backup_as(&path, "20260712").unwrap();
+        assert_eq!(b1, dir.path().join("tasks.txt-20260712"));
+        assert_eq!(fs::read_to_string(&b1).unwrap(), "[x] a\n");
+
+        // Same-day second backup gets -2; a third gets -3.
+        fs::write(&path, "[x] b\n").unwrap();
+        let b2 = backup_as(&path, "20260712").unwrap();
+        assert_eq!(b2, dir.path().join("tasks.txt-20260712-2"));
+        assert_eq!(fs::read_to_string(&b2).unwrap(), "[x] b\n");
+        let b3 = backup_as(&path, "20260712").unwrap();
+        assert_eq!(b3, dir.path().join("tasks.txt-20260712-3"));
+        // The originals are untouched.
+        assert_eq!(fs::read_to_string(&b1).unwrap(), "[x] a\n");
     }
 
     #[test]

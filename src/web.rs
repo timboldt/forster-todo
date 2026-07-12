@@ -7,8 +7,9 @@
 //! - `POST /api/add`   body = task text; appends an open task
 //! - `POST /api/act?op=<op>&version=N` applies an FVP operation:
 //!   `dot`/`skip`/`back`/`finish` during a scan, `complete`/`resume` in action
-//!   mode. The version guard (409 on mismatch) prevents acting on a stale
-//!   view, and ops outside their mode return 409.
+//!   mode, `purge` (backup + drop done tasks) in any mode. The version guard
+//!   (409 on mismatch) prevents acting on a stale view, and ops outside their
+//!   mode return 409.
 //!
 //! `version` is the session's change counter; the page polls and re-renders
 //! only when it moves. All mutations go through the same [`Session`] the TUI
@@ -180,6 +181,8 @@ fn handle(mut request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
                         Ok(())
                     }
                 }
+                // Modeless: back up the file, then drop done tasks.
+                "purge" => session.purge_done().map(|_| ()),
                 _ => return respond_json(request, 400, r#"{"error":"unknown op"}"#),
             };
             match result {

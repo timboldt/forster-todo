@@ -100,6 +100,43 @@ impl Session {
         self.save()
     }
 
+    /// Back up the task file to a dated copy, then remove all done tasks.
+    /// Returns the number purged; when nothing is done this is a no-op (no
+    /// backup is written). Mode indices are remapped to the compacted list.
+    pub fn purge_done(&mut self) -> Result<usize> {
+        let purged = self.tasks.iter().filter(|t| !t.is_active()).count();
+        if purged == 0 {
+            return Ok(0);
+        }
+        storage::backup(&self.path)?;
+
+        // New index of each retained task (None for the removed ones).
+        let mut new_index = vec![None; self.tasks.len()];
+        let mut next = 0;
+        for (i, t) in self.tasks.iter().enumerate() {
+            if t.is_active() {
+                new_index[i] = Some(next);
+                next += 1;
+            }
+        }
+        self.tasks.retain(Task::is_active);
+
+        // The mode only ever points at active tasks, so remapping always
+        // succeeds; fall back to a fresh initial mode defensively.
+        let remapped = match self.mode {
+            Mode::Empty => Some(Mode::Empty),
+            Mode::Action { task } => new_index[task].map(|task| Mode::Action { task }),
+            Mode::Preselect { benchmark, cursor } => new_index[benchmark]
+                .zip(new_index[cursor])
+                .map(|(benchmark, cursor)| Mode::Preselect { benchmark, cursor }),
+        };
+        self.mode = remapped.unwrap_or_else(|| fvp::initial_mode(&mut self.tasks));
+
+        self.bump();
+        self.save()?;
+        Ok(purged)
+    }
+
     /// The "DO NOW" task, if the scan is finished.
     pub fn action_task(&self) -> Option<usize> {
         match self.mode {
@@ -142,6 +179,93 @@ mod tests {
         s.complete().unwrap();
         assert_eq!(s.mode, before);
         assert!(s.tasks.iter().all(|t| t.is_active()));
+    }
+
+    #[test]
+    fn purge_removes_done_backs_up_and_remaps_scan_indices() {
+        let (dir, mut s) = session(&["a", "b", "c", "d"]);
+        // Build state: dot a, dot c, then complete c -> Action on a.
+        // Initial: Preselect { benchmark: 0(a), cursor: 1(b) }.
+        s.move_down(); // cursor -> 2(c)
+        s.dot().unwrap(); // dot c -> benchmark 2, cursor 3(d)
+        s.finish_scan(); // Action { task: 2 }
+        s.complete().unwrap(); // c done -> Action { task: 0 }
+        s.resume_scan(); // Preselect { benchmark: 0, cursor: 1(b) }
+        assert_eq!(
+            s.mode,
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+
+        let purged = s.purge_done().unwrap();
+        assert_eq!(purged, 1); // c removed
+        assert_eq!(
+            s.tasks.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "d"]
+        );
+        // Indices before c were unaffected; the scan state survives intact.
+        assert_eq!(
+            s.mode,
+            Mode::Preselect {
+                benchmark: 0,
+                cursor: 1
+            }
+        );
+        // A dated backup exists next to the file and preserves the done task.
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().starts_with("tasks.txt-"))
+            .expect("backup file created");
+        assert!(
+            std::fs::read_to_string(backup.path())
+                .unwrap()
+                .contains("[x] c")
+        );
+        // The live file no longer has c.
+        let live = std::fs::read_to_string(dir.path().join("tasks.txt")).unwrap();
+        assert!(!live.contains('c'));
+    }
+
+    #[test]
+    fn purge_remaps_action_index_past_removed_tasks() {
+        let (_dir, mut s) = session(&["a", "b"]);
+        // Dot both; complete a's chain partner first. Initial Preselect{0,1}.
+        s.dot().unwrap(); // dot b -> Action { task: 1 }
+        // Complete b -> Action { task: 0 }; b done at index 1.
+        s.complete().unwrap();
+        // Manually check: mode Action{0}, b done. Now make done task come FIRST
+        // in file order by completing a and rescanning... simpler: purge now
+        // (done task is after the action task -> index unchanged).
+        assert_eq!(s.purge_done().unwrap(), 1);
+        assert_eq!(s.mode, Mode::Action { task: 0 });
+        assert_eq!(s.tasks.len(), 1);
+
+        // Now the done task precedes the survivor: add c, complete a.
+        s.add("c").unwrap(); // Action stays on a; c open at index 1
+        s.complete().unwrap(); // a done -> fresh scan? a was only dot -> start_scan dots c
+        assert_eq!(s.mode, Mode::Action { task: 1 }); // c, after done a
+        assert_eq!(s.purge_done().unwrap(), 1);
+        // c shifted from index 1 to 0 and the mode followed it.
+        assert_eq!(s.mode, Mode::Action { task: 0 });
+        assert_eq!(s.tasks[0].text, "c");
+    }
+
+    #[test]
+    fn purge_with_nothing_done_is_a_noop_without_backup() {
+        let (dir, mut s) = session(&["a", "b"]);
+        let v = s.version();
+        assert_eq!(s.purge_done().unwrap(), 0);
+        assert_eq!(s.version(), v);
+        // No backup file appeared.
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("tasks.txt-"))
+            .count();
+        assert_eq!(backups, 0);
     }
 
     #[test]
