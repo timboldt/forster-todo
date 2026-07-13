@@ -58,10 +58,7 @@ fn draw_title(frame: &mut Frame, area: Rect) {
     let title = Line::from(vec![
         Span::styled(
             " Mark Forster's FVP ",
-            Style::default()
-                .fg(FG)
-                .bg(BG)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(FG).bg(BG).add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ? for help", Style::default().fg(MUTED)),
     ]);

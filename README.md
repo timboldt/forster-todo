@@ -53,13 +53,21 @@ terminal.
 > but credentials are only base64-encoded on the wire — don't reuse a password
 > you care about.
 
-The web view has the full functionality of the TUI:
+The page mirrors the TUI's three levels with a **Scan / Do / Browse** control
+at the top. Scan and Do reflect the shared session mode (switching between
+them finishes or resumes the scan, like `Esc`/`s` in the terminal); Browse is
+local to the page, so browsing on your phone never disturbs the terminal.
 
-- **Scan** — during pre-selection the page shows the FVP question ("Do you want
-  to do X more than Y?") with **Yes / No / Back / Finish** buttons.
-- **Act** — the DO NOW banner has **Complete** and **Scan** (resume) buttons.
+- **Scan** — the FVP question ("Do you want to do X more than Y?") with
+  **Yes / No / Back / Undo / Finish** buttons. On touch screens, swipe the
+  question card **right to dot** and **left to undo** — the same as `→`/`←`
+  in the TUI.
+- **Do** — the DO NOW card with **Complete** and **Scan** (resume) buttons.
+- **Browse** — the whole list (with Selected / Unfinished / All filters and
+  the purge button). Tap a task to **edit its text** inline; swipe a row
+  **right to toggle done**, **left to toggle its dot**. Without a touch
+  screen, each row has ✓ / · / ✎ buttons for the same three actions.
 - **Add a task** — appends an open task, exactly like `a` in the TUI.
-- **Purge done** — backs up the task file, then removes finished tasks.
 - The TUI keyboard shortcuts work on the page too (`→` dot, `←` undo dot,
   `↓` skip, `↑` back, `Esc` finish, `Space` complete, `s` scan).
 

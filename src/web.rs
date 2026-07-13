@@ -10,6 +10,11 @@
 //!   mode, `purge` (backup + drop done tasks) in any mode. The version guard
 //!   (409 on mismatch) prevents acting on a stale view, and ops outside their
 //!   mode return 409.
+//! - `POST /api/task?op=<op>&i=<index>&version=N` direct manipulation of the
+//!   task at `i` (the web equivalent of TUI browse mode): `toggle_done`,
+//!   `toggle_dot`, or `edit` (body = new text). The version guard also makes
+//!   the index race-safe — a stale view gets 409 before it can hit the wrong
+//!   row.
 //!
 //! `version` is the session's change counter; the page polls and re-renders
 //! only when it moves. All mutations go through the same [`Session`] the TUI
@@ -184,6 +189,51 @@ fn handle(mut request: Request, session: &Arc<Mutex<Session>>) -> Result<()> {
                 }
                 // Modeless: back up the file, then drop done tasks.
                 "purge" => session.purge_done().map(|_| ()),
+                _ => return respond_json(request, 400, r#"{"error":"unknown op"}"#),
+            };
+            match result {
+                Ok(()) => respond_json(request, 200, &snapshot_json(&session)),
+                Err(_) => respond_json(request, 500, r#"{"error":"failed to save"}"#),
+            }
+        }
+        (Method::Post, "/api/task") => {
+            let Some(op) = query_param(query, "op") else {
+                return respond_json(request, 400, r#"{"error":"op parameter required"}"#);
+            };
+            let op = op.to_string();
+            let Some(i) = query_param(query, "i").and_then(|v| v.parse::<usize>().ok()) else {
+                return respond_json(request, 400, r#"{"error":"i parameter required"}"#);
+            };
+            let Some(expected) = query_param(query, "version").and_then(|v| v.parse::<u64>().ok())
+            else {
+                return respond_json(request, 400, r#"{"error":"version parameter required"}"#);
+            };
+            // The edit body must be read before the request is consumed.
+            let text = if op == "edit" {
+                let mut text = String::new();
+                request
+                    .as_reader()
+                    .take(MAX_BODY)
+                    .read_to_string(&mut text)?;
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return respond_json(request, 400, r#"{"error":"empty task text"}"#);
+                }
+                Some(text)
+            } else {
+                None
+            };
+            let mut session = session.lock().expect("session lock poisoned");
+            if session.version() != expected {
+                return respond_json(request, 409, r#"{"error":"stale version"}"#);
+            }
+            if i >= session.tasks.len() {
+                return respond_json(request, 400, r#"{"error":"bad index"}"#);
+            }
+            let result = match op.as_str() {
+                "toggle_done" => session.toggle_done_at(i),
+                "toggle_dot" => session.toggle_dot_at(i),
+                "edit" => session.edit_text_at(i, text.expect("read above for edit")),
                 _ => return respond_json(request, 400, r#"{"error":"unknown op"}"#),
             };
             match result {
